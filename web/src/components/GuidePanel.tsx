@@ -15,7 +15,11 @@ interface Section {
   content: React.ReactNode;
 }
 
-const sections: Section[] = [
+function useSections(): Section[] {
+  const hostIp = window.location.hostname;
+  const isLocal = hostIp === 'localhost' || hostIp === '127.0.0.1';
+
+  return [
   {
     id: 'overview',
     title: 'Übersicht',
@@ -163,14 +167,14 @@ const sections: Section[] = [
         <div className="bg-gray-700/50 rounded-lg p-3">
           <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">MQTTX Web-Client</h4>
           <p className="text-xs text-gray-400 mb-2">
-            Ein Web-basierter MQTT-Client ist unter Port <span className="text-white font-mono">8085</span> verfügbar.
+            Ein Web-basierter MQTT-Client ist unter <a href={`http://${hostIp}:8085`} target="_blank" rel="noopener noreferrer" className="text-shelly-blue hover:underline font-mono">http://{hostIp}:8085</a> verfügbar.
           </p>
           <p className="text-xs text-gray-400 mb-2">Verbindungseinstellungen:</p>
           <table className="text-xs w-full">
             <tbody>
               <tr className="border-b border-gray-600/30">
                 <td className="py-1.5 text-gray-400 pr-4">Host</td>
-                <td className="py-1.5 text-white font-mono">ws://localhost</td>
+                <td className="py-1.5 text-white font-mono">ws://{hostIp}</td>
               </tr>
               <tr className="border-b border-gray-600/30">
                 <td className="py-1.5 text-gray-400 pr-4">Port</td>
@@ -188,16 +192,29 @@ const sections: Section[] = [
           <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Shelly MQTT aktivieren</h4>
           <p className="text-xs text-gray-400">
             In der Shelly Web-Oberfläche unter <strong className="text-white">Settings → MQTT</strong> den
-            Broker auf <span className="text-white font-mono">192.168.x.x:1883</span> (IP des Docker-Hosts) setzen
+            Broker auf <span className="text-white font-mono">{isLocal ? '<Docker-Host-IP>' : hostIp}:1883</span> setzen
             und MQTT aktivieren.
           </p>
+          {isLocal && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-2 mt-2">
+              <p className="text-yellow-400 text-xs">
+                <strong>Hinweis:</strong> Du greifst über <span className="font-mono">{hostIp}</span> zu.
+                Shelly-Geräte können <span className="font-mono">localhost</span> nicht erreichen.
+                Verwende stattdessen die LAN-IP des Docker-Hosts (z.B. <span className="font-mono">192.168.x.x:1883</span>).
+                Öffne diese Seite über die LAN-IP, um die korrekte Adresse hier zu sehen.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     ),
   },
-];
+  ];
+}
 
 export default function GuidePanel() {
+  const sections = useSections();
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
