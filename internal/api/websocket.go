@@ -37,11 +37,12 @@ type WebSocketHub struct {
 	mappingManager *loxone.MappingManager
 	udpSender      *loxone.UDPSender
 	httpSender     *loxone.HTTPSender
+	mqttSender     *loxone.MQTTSender
 	cmdParser      *loxone.CommandParser
 }
 
 // NewWebSocketHub creates a new WebSocket hub
-func NewWebSocketHub(shellyClient *shelly.Client, mappingManager *loxone.MappingManager, udpSender *loxone.UDPSender, httpSender *loxone.HTTPSender) *WebSocketHub {
+func NewWebSocketHub(shellyClient *shelly.Client, mappingManager *loxone.MappingManager, udpSender *loxone.UDPSender, httpSender *loxone.HTTPSender, mqttSender *loxone.MQTTSender) *WebSocketHub {
 	return &WebSocketHub{
 		clients:        make(map[*WebSocketClient]bool),
 		broadcast:      make(chan []byte, 256),
@@ -52,6 +53,7 @@ func NewWebSocketHub(shellyClient *shelly.Client, mappingManager *loxone.Mapping
 		mappingManager: mappingManager,
 		udpSender:      udpSender,
 		httpSender:     httpSender,
+		mqttSender:     mqttSender,
 		cmdParser:      loxone.NewCommandParser(),
 	}
 }
@@ -293,6 +295,15 @@ func (h *WebSocketHub) sendFeedback(event shelly.Event) {
 				h.httpSender.Send(miniserverID, mapping.LoxoneID, prop.name, prop.value)
 			} else {
 				h.httpSender.SendToAll(mapping.LoxoneID, prop.name, prop.value)
+			}
+		}
+
+		// MQTT feedback
+		if mapping.ShouldFeedbackMQTT() && h.mqttSender != nil && h.mqttSender.IsEnabled() {
+			if miniserverID != "" {
+				h.mqttSender.Send(miniserverID, mapping.LoxoneID, prop.name, prop.value)
+			} else {
+				h.mqttSender.SendToAll(mapping.LoxoneID, prop.name, prop.value)
 			}
 		}
 	}

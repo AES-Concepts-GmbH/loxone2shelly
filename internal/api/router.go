@@ -24,15 +24,17 @@ type Server struct {
 	mappingManager *loxone.MappingManager
 	udpSender      *loxone.UDPSender
 	httpSender     *loxone.HTTPSender
+	mqttSender     *loxone.MQTTSender
 }
 
 // NewServer creates a new API server
-func NewServer(shellyClient *shelly.Client, mappingManager *loxone.MappingManager, udpSender *loxone.UDPSender, httpSender *loxone.HTTPSender) *Server {
+func NewServer(shellyClient *shelly.Client, mappingManager *loxone.MappingManager, udpSender *loxone.UDPSender, httpSender *loxone.HTTPSender, mqttSender *loxone.MQTTSender) *Server {
 	s := &Server{
 		shellyClient:   shellyClient,
 		mappingManager: mappingManager,
 		udpSender:      udpSender,
 		httpSender:     httpSender,
+		mqttSender:     mqttSender,
 	}
 
 	s.handlers = &Handlers{
@@ -42,7 +44,7 @@ func NewServer(shellyClient *shelly.Client, mappingManager *loxone.MappingManage
 		httpSender:     httpSender,
 	}
 
-	s.wsHub = NewWebSocketHub(shellyClient, mappingManager, udpSender, httpSender)
+	s.wsHub = NewWebSocketHub(shellyClient, mappingManager, udpSender, httpSender, mqttSender)
 
 	s.router = mux.NewRouter()
 	s.setupRoutes()

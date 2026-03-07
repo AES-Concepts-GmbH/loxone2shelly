@@ -9,6 +9,7 @@ shelly:
     #   name: "Büro Licht"
     #   ip: "192.168.1.50"
     #   generation: 2
+    #   mqtt_id: "shellyplus1-aabbccddee"  # optional: MQTT device ID (defaults to id)
 
 loxone:
   miniservers:
@@ -21,7 +22,17 @@ loxone:
     #   http_url: ""
     #   http_user: ""
     #   http_password: ""
+    #   mqtt_enabled: false
+    #   mqtt_topic_prefix: "loxone2shelly"  # topic: <prefix>/<loxone_id>/<property>
     #   send_all: false
+
+mqtt:
+  enabled: false
+  broker: "tcp://mosquitto:1883"  # Docker-Servicename; "tcp://localhost:1883" wenn ausserhalb Docker
+  username: ""
+  password: ""
+  client_id: "loxone2shelly"
+  topic_prefix: "shellies"
 
 logging:
   level: "info"

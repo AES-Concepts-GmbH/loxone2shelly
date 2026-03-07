@@ -14,8 +14,19 @@ type Config struct {
 	Server   ServerConfig     `yaml:"server" json:"server"`
 	Shelly   ShellyConfig     `yaml:"shelly" json:"shelly"`
 	Loxone   LoxoneConfig     `yaml:"loxone" json:"loxone"`
+	MQTT     MQTTConfig       `yaml:"mqtt" json:"mqtt"`
 	Logging  LoggingConfig    `yaml:"logging" json:"logging"`
 	Mappings []models.Mapping `yaml:"mappings" json:"mappings"`
+}
+
+// MQTTConfig holds MQTT broker settings
+type MQTTConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	Broker      string `yaml:"broker" json:"broker"`
+	Username    string `yaml:"username" json:"username"`
+	Password    string `yaml:"password" json:"password"`
+	ClientID    string `yaml:"client_id" json:"client_id"`
+	TopicPrefix string `yaml:"topic_prefix" json:"topic_prefix"`
 }
 
 // ServerConfig holds HTTP server settings
@@ -30,6 +41,7 @@ type ShellyDeviceConfig struct {
 	Name       string `yaml:"name" json:"name"`
 	IP         string `yaml:"ip" json:"ip"`
 	Generation int    `yaml:"generation" json:"generation"` // 1 or 2
+	MQTTID     string `yaml:"mqtt_id" json:"mqtt_id"`       // MQTT device ID (e.g. "shellyplus1-aabbccddee"); defaults to ID
 }
 
 // ShellyConfig holds Shelly device settings
@@ -40,16 +52,18 @@ type ShellyConfig struct {
 
 // MiniserverConfig holds settings for a single Loxone Miniserver
 type MiniserverConfig struct {
-	ID           string `yaml:"id" json:"id"`
-	Name         string `yaml:"name" json:"name"`
-	IP           string `yaml:"ip" json:"ip"`
-	Port         int    `yaml:"port" json:"port"`
-	UDPEnabled   bool   `yaml:"udp_enabled" json:"udp_enabled"`
-	HTTPEnabled  bool   `yaml:"http_enabled" json:"http_enabled"`
-	HTTPURL      string `yaml:"http_url" json:"http_url"`
-	HTTPUser     string `yaml:"http_user" json:"http_user"`
-	HTTPPassword string `yaml:"http_password" json:"http_password"`
-	SendAll      bool   `yaml:"send_all" json:"send_all"`
+	ID              string `yaml:"id" json:"id"`
+	Name            string `yaml:"name" json:"name"`
+	IP              string `yaml:"ip" json:"ip"`
+	Port            int    `yaml:"port" json:"port"`
+	UDPEnabled      bool   `yaml:"udp_enabled" json:"udp_enabled"`
+	HTTPEnabled     bool   `yaml:"http_enabled" json:"http_enabled"`
+	HTTPURL         string `yaml:"http_url" json:"http_url"`
+	HTTPUser        string `yaml:"http_user" json:"http_user"`
+	HTTPPassword    string `yaml:"http_password" json:"http_password"`
+	MQTTEnabled     bool   `yaml:"mqtt_enabled" json:"mqtt_enabled"`
+	MQTTTopicPrefix string `yaml:"mqtt_topic_prefix" json:"mqtt_topic_prefix"` // e.g. "loxone2shelly"; topic: <prefix>/<loxone_id>/<property>
+	SendAll         bool   `yaml:"send_all" json:"send_all"`
 }
 
 // LoxoneConfig holds Loxone integration settings
@@ -107,6 +121,12 @@ func DefaultConfig() *Config {
 		},
 		Loxone: LoxoneConfig{
 			Miniservers: []MiniserverConfig{},
+		},
+		MQTT: MQTTConfig{
+			Enabled:     false,
+			Broker:      "tcp://localhost:1883",
+			ClientID:    "loxone2shelly",
+			TopicPrefix: "shellies",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

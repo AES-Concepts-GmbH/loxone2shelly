@@ -10,6 +10,7 @@ type Mapping struct {
 	Enabled      bool   `json:"enabled" yaml:"enabled"`
 	FeedbackUDP  *bool  `json:"feedback_udp,omitempty" yaml:"feedback_udp,omitempty"`
 	FeedbackHTTP *bool  `json:"feedback_http,omitempty" yaml:"feedback_http,omitempty"`
+	FeedbackMQTT *bool  `json:"feedback_mqtt,omitempty" yaml:"feedback_mqtt,omitempty"`
 	Description  string `json:"description,omitempty" yaml:"description,omitempty"`
 	MiniserverID string `json:"miniserver_id,omitempty" yaml:"miniserver_id,omitempty"`
 }
@@ -28,6 +29,14 @@ func (m *Mapping) ShouldFeedbackHTTP() bool {
 		return true
 	}
 	return *m.FeedbackHTTP
+}
+
+// ShouldFeedbackMQTT returns true if MQTT feedback should be sent for this mapping.
+func (m *Mapping) ShouldFeedbackMQTT() bool {
+	if m.FeedbackMQTT == nil {
+		return true
+	}
+	return *m.FeedbackMQTT
 }
 
 // LoxoneCommand represents an incoming command from Loxone

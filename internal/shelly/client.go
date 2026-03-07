@@ -175,6 +175,15 @@ func (c *Client) Events() <-chan Event {
 	return c.eventChan
 }
 
+// PushEvent injects an external event (e.g. from MQTT) into the event channel.
+func (c *Client) PushEvent(event Event) {
+	select {
+	case c.eventChan <- event:
+	default:
+		log.Warn().Str("id", event.DeviceID).Msg("Event channel full, dropping MQTT event")
+	}
+}
+
 // Close stops the client and releases resources
 func (c *Client) Close() {
 	close(c.stopChan)
@@ -203,16 +212,23 @@ func (c *Client) rpcGet(ip, method string) (map[string]interface{}, error) {
 }
 
 func (c *Client) rpcPost(ip, method string, payload interface{}) (map[string]interface{}, error) {
-	url := fmt.Sprintf("http://%s/rpc/%s", ip, method)
+	url := fmt.Sprintf("http://%s/rpc", ip)
 
-	data, err := json.Marshal(payload)
+	// Use standard Gen2 RPC format: {"id":1,"method":"...","params":{...}}
+	rpcRequest := map[string]interface{}{
+		"id":     1,
+		"method": method,
+		"params": payload,
+	}
+
+	data, err := json.Marshal(rpcRequest)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling payload: %w", err)
+		return nil, fmt.Errorf("marshaling RPC request: %w", err)
 	}
 
 	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("HTTP POST %s: %w", url, err)
+		return nil, fmt.Errorf("HTTP POST %s (%s): %w", url, method, err)
 	}
 	defer resp.Body.Close()
 
@@ -221,11 +237,23 @@ func (c *Client) rpcPost(ip, method string, payload interface{}) (map[string]int
 		return nil, fmt.Errorf("reading response from %s: %w", url, err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var rpcResp map[string]interface{}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return nil, fmt.Errorf("parsing JSON from %s: %w", url, err)
 	}
-	return result, nil
+
+	// Check for RPC error
+	if rpcErr, ok := rpcResp["error"].(map[string]interface{}); ok {
+		errMsg := fmt.Sprintf("%v", rpcErr["message"])
+		return nil, fmt.Errorf("RPC error for %s: %s", method, errMsg)
+	}
+
+	// Return the "result" field
+	if result, ok := rpcResp["result"].(map[string]interface{}); ok {
+		return result, nil
+	}
+
+	return rpcResp, nil
 }
 
 // --- Gen1 HTTP helpers ---

@@ -14,6 +14,7 @@ import (
 	"github.com/sbeyeler/loxone2shelly/internal/config"
 	"github.com/sbeyeler/loxone2shelly/internal/logging"
 	"github.com/sbeyeler/loxone2shelly/internal/loxone"
+	"github.com/sbeyeler/loxone2shelly/internal/mqttclient"
 	"github.com/sbeyeler/loxone2shelly/internal/shelly"
 )
 
@@ -55,6 +56,12 @@ func main() {
 	httpSender := loxone.NewHTTPSender()
 	httpSender.Configure(cfg.Loxone.Miniservers)
 
+	// Create MQTT sender (Loxone feedback via MQTT)
+	mqttSender := loxone.NewMQTTSender()
+	if cfg.MQTT.Enabled {
+		mqttSender.Configure(cfg.MQTT, cfg.Loxone.Miniservers)
+	}
+
 	// Start Shelly polling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -66,8 +73,20 @@ func main() {
 		log.Warn().Msg("No Shelly devices configured. Add devices via config file or API.")
 	}
 
+	// Start MQTT subscriber (if enabled)
+	var mqttSub *mqttclient.Subscriber
+	if cfg.MQTT.Enabled {
+		mqttSub = mqttclient.NewSubscriber(shellyClient)
+		for _, dev := range cfg.Shelly.Devices {
+			mqttSub.RegisterDevice(dev.ID, dev.MQTTID)
+		}
+		if err := mqttSub.Start(cfg.MQTT); err != nil {
+			log.Error().Err(err).Msg("Failed to start MQTT subscriber (continuing without MQTT)")
+		}
+	}
+
 	// Create and start API server
-	server := api.NewServer(shellyClient, mappingManager, udpSender, httpSender)
+	server := api.NewServer(shellyClient, mappingManager, udpSender, httpSender, mqttSender)
 
 	// Start server in goroutine
 	go func() {
@@ -97,11 +116,17 @@ func main() {
 		log.Error().Err(err).Msg("Server shutdown error")
 	}
 
+	// Close MQTT subscriber
+	if mqttSub != nil {
+		mqttSub.Close()
+	}
+
 	// Close Shelly client
 	shellyClient.Close()
 
 	// Close senders
 	udpSender.Close()
+	mqttSender.Close()
 
 	log.Info().Msg("Loxone2Shelly Gateway stopped")
 }

@@ -1,4 +1,27 @@
 services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    environment:
+      - TZ=Europe/Zurich
+
+  mqttx-web:
+    image: emqx/mqttx-web:latest
+    container_name: mqttx-web
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+    depends_on:
+      - mosquitto
+
   loxone2shelly:
     build: .
     container_name: loxone2shelly
@@ -9,3 +32,9 @@ services:
       - ./configs:/app/configs
     environment:
       - TZ=Europe/Zurich
+    depends_on:
+      - mosquitto
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
