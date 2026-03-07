@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Device, Input, DeviceCommand, WSMessage } from '../types';
+import type { Device, Input, DeviceCommand, WSMessage, WebhookEvent } from '../types';
 import * as api from '../services/api';
 import { useWebSocket } from './useWebSocket';
 
 const COMMAND_COOLDOWN_MS = 3000;
+const MAX_WEBHOOK_EVENTS = 100;
 
 export function useShellyDevices() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [inputs, setInputs] = useState<Input[]>([]);
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Track devices with recent commands to ignore stale WS updates
@@ -55,6 +57,21 @@ export function useShellyDevices() {
       case 'devices_refresh':
         refresh();
         break;
+      case 'webhook_event': {
+        const webhookPayload = message.payload as {
+          device_id: string;
+          event: string;
+          channel: number;
+          value: string;
+          loxone_id: string;
+        };
+        const webhookEvent: WebhookEvent = {
+          ...webhookPayload,
+          timestamp: new Date().toISOString(),
+        };
+        setWebhookEvents((prev) => [webhookEvent, ...prev].slice(0, MAX_WEBHOOK_EVENTS));
+        break;
+      }
     }
   }, []);
 
@@ -122,6 +139,7 @@ export function useShellyDevices() {
   return {
     devices,
     inputs,
+    webhookEvents,
     loading,
     error,
     isConnected,

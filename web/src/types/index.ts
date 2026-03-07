@@ -179,3 +179,12 @@ export interface ConfigBackup {
     mappings?: Mapping[];
   };
 }
+
+export interface WebhookEvent {
+  device_id: string;
+  event: string;
+  channel: number;
+  value: string;
+  loxone_id: string;
+  timestamp: string;
+}

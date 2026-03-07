@@ -11,6 +11,7 @@ export default function App() {
   const {
     devices,
     inputs,
+    webhookEvents,
     loading,
     error,
     isConnected,
@@ -69,6 +70,7 @@ export default function App() {
     <Dashboard
       devices={devices}
       inputs={inputs}
+      webhookEvents={webhookEvents}
       loading={loading}
       error={error}
       isConnected={isConnected}

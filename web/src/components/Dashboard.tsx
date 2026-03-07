@@ -7,17 +7,20 @@ import {
   Link,
   Settings,
   BookOpen,
+  Radio,
 } from 'lucide-react';
-import type { Device, DeviceCommand, Input } from '../types';
+import type { Device, DeviceCommand, Input, WebhookEvent } from '../types';
 import DeviceList from './DeviceList';
 import InputList from './InputList';
 import MappingConfig from './MappingConfig';
 import SettingsPanel from './SettingsPanel';
 import GuidePanel from './GuidePanel';
+import WebhookPanel from './WebhookPanel';
 
 interface DashboardProps {
   devices: Device[];
   inputs: Input[];
+  webhookEvents: WebhookEvent[];
   loading: boolean;
   error: string | null;
   isConnected: boolean;
@@ -25,7 +28,7 @@ interface DashboardProps {
   onCommand: (id: string, cmd: DeviceCommand) => void;
 }
 
-type TabId = 'devices' | 'inputs' | 'mappings' | 'settings' | 'guide';
+type TabId = 'devices' | 'inputs' | 'webhooks' | 'mappings' | 'settings' | 'guide';
 
 interface Tab {
   id: TabId;
@@ -36,6 +39,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'devices', label: 'Geräte', icon: Power },
   { id: 'inputs', label: 'Eingänge', icon: MousePointerClick },
+  { id: 'webhooks', label: 'Webhooks', icon: Radio },
   { id: 'mappings', label: 'Mappings', icon: Link },
   { id: 'settings', label: 'Einstellungen', icon: Settings },
   { id: 'guide', label: 'Anleitung', icon: BookOpen },
@@ -44,6 +48,7 @@ const tabs: Tab[] = [
 export default function Dashboard({
   devices,
   inputs,
+  webhookEvents,
   loading,
   error,
   isConnected,
@@ -160,6 +165,7 @@ export default function Dashboard({
           />
         )}
         {activeTab === 'inputs' && <InputList inputs={inputs} loading={loading} />}
+        {activeTab === 'webhooks' && <WebhookPanel events={webhookEvents} devices={devices} />}
         {activeTab === 'mappings' && <MappingConfig devices={devices} />}
         {activeTab === 'settings' && <SettingsPanel />}
         {activeTab === 'guide' && <GuidePanel />}
