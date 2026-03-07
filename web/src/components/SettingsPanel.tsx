@@ -19,6 +19,7 @@ import {
   Eye,
   EyeOff,
   MessageSquare,
+  Pencil,
 } from 'lucide-react';
 import type {
   ConfigResponse,
@@ -135,6 +136,19 @@ export default function SettingsPanel() {
       setIsCreatingShelly(false);
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Fehler');
+    }
+  };
+
+  const handleUpdateShelly = async () => {
+    if (!editingShelly) return;
+    try {
+      const updated = await api.updateShelly(editingShelly.id, editingShelly);
+      setShellyDevices((prev) =>
+        prev.map((d) => (d.id === updated.id ? updated : d))
+      );
+      setEditingShelly(null);
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : 'Fehler beim Aktualisieren');
     }
   };
 
@@ -594,9 +608,11 @@ export default function SettingsPanel() {
           </div>
 
           {/* Shelly Edit Form */}
-          {editingShelly && isCreatingShelly && (
+          {editingShelly && (
             <div className="bg-gray-800 rounded-xl p-4 shadow-lg animate-fade-in">
-              <h4 className="text-sm font-semibold text-white mb-3">Neues Shelly Gerät</h4>
+              <h4 className="text-sm font-semibold text-white mb-3">
+                {isCreatingShelly ? 'Neues Shelly Gerät' : 'Shelly Gerät bearbeiten'}
+              </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Name</label>
@@ -647,10 +663,10 @@ export default function SettingsPanel() {
               </div>
               <div className="flex items-center gap-2 mt-4">
                 <button
-                  onClick={handleAddShelly}
+                  onClick={isCreatingShelly ? handleAddShelly : handleUpdateShelly}
                   className="px-4 py-2 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-sm transition-colors"
                 >
-                  Hinzufügen
+                  {isCreatingShelly ? 'Hinzufügen' : 'Speichern'}
                 </button>
                 <button
                   onClick={() => {
@@ -698,6 +714,16 @@ export default function SettingsPanel() {
                     title="Verbindung testen"
                   >
                     <TestTube size={14} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingShelly({ ...device });
+                      setIsCreatingShelly(false);
+                    }}
+                    className="p-1.5 hover:bg-gray-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                    title="Bearbeiten"
+                  >
+                    <Pencil size={14} />
                   </button>
                   <button
                     onClick={() => handleRemoveShelly(device.id)}

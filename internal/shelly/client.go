@@ -67,6 +67,21 @@ func (c *Client) AddDevice(id, name, ip string, gen int) {
 	log.Info().Str("id", id).Str("name", name).Str("ip", ip).Int("gen", gen).Msg("Shelly device added")
 }
 
+// UpdateDevice updates name and IP of an existing Shelly device
+func (c *Client) UpdateDevice(id, name, ip string, gen int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dev, ok := c.devices[id]
+	if !ok {
+		return false
+	}
+	dev.Name = name
+	dev.IP = ip
+	dev.Generation = gen
+	log.Info().Str("id", id).Str("name", name).Str("ip", ip).Int("gen", gen).Msg("Shelly device updated")
+	return true
+}
+
 // RemoveDevice removes a Shelly device from the client
 func (c *Client) RemoveDevice(id string) {
 	c.mu.Lock()

@@ -173,6 +173,77 @@ func (h *Handlers) AddShelly(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpdateShelly updates an existing Shelly device in the configuration
+func (h *Handlers) UpdateShelly(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var req AddShellyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if req.Name == "" && req.IP == "" {
+		jsonError(w, http.StatusBadRequest, "name or ip is required")
+		return
+	}
+
+	// Find existing device in config
+	cfg := config.Get()
+	found := false
+	for i, d := range cfg.Shelly.Devices {
+		if d.ID == id {
+			if req.Name != "" {
+				cfg.Shelly.Devices[i].Name = req.Name
+			}
+			if req.IP != "" {
+				cfg.Shelly.Devices[i].IP = req.IP
+			}
+			if req.Generation > 0 {
+				cfg.Shelly.Devices[i].Generation = req.Generation
+			}
+			cfg.Shelly.Devices[i].MQTTID = req.MQTTID
+
+			// Update in Shelly client
+			h.shellyClient.UpdateDevice(id,
+				cfg.Shelly.Devices[i].Name,
+				cfg.Shelly.Devices[i].IP,
+				cfg.Shelly.Devices[i].Generation,
+			)
+
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		jsonError(w, http.StatusNotFound, "device not found")
+		return
+	}
+
+	config.UpdateShelly(cfg.Shelly)
+	if err := config.Save(); err != nil {
+		log.Error().Err(err).Msg("Failed to save config after updating device")
+	}
+
+	log.Info().Str("id", id).Msg("Shelly device updated via API")
+
+	// Return updated device config
+	for _, d := range cfg.Shelly.Devices {
+		if d.ID == id {
+			jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"id":         d.ID,
+				"name":       d.Name,
+				"ip":         d.IP,
+				"generation": d.Generation,
+				"mqtt_id":    d.MQTTID,
+			})
+			return
+		}
+	}
+}
+
 // RemoveShelly removes a Shelly device from the configuration
 func (h *Handlers) RemoveShelly(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)

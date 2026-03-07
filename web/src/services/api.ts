@@ -177,6 +177,13 @@ export async function addShelly(data: ShellyDeviceConfig): Promise<ShellyDeviceC
   });
 }
 
+export async function updateShelly(id: string, data: Partial<ShellyDeviceConfig>): Promise<ShellyDeviceConfig> {
+  return request(`/shelly/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
 export async function removeShelly(id: string): Promise<void> {
   return request(`/shelly/${id}`, {
     method: 'DELETE',

@@ -109,6 +109,7 @@ func (s *Server) setupRoutes() {
 	// Shelly management
 	api.HandleFunc("/shelly/discover", s.handlers.DiscoverShelly).Methods("GET", "OPTIONS")
 	api.HandleFunc("/shelly/add", s.handlers.AddShelly).Methods("POST", "OPTIONS")
+	api.HandleFunc("/shelly/{id}", s.handlers.UpdateShelly).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/shelly/{id}", s.handlers.RemoveShelly).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/shelly/{id}/test", s.handlers.TestShellyConnection).Methods("POST", "OPTIONS")
 
