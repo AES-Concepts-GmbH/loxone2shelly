@@ -6,12 +6,14 @@ import {
   MousePointerClick,
   Link,
   Settings,
+  BookOpen,
 } from 'lucide-react';
 import type { Device, DeviceCommand, Input } from '../types';
 import DeviceList from './DeviceList';
 import InputList from './InputList';
 import MappingConfig from './MappingConfig';
 import SettingsPanel from './SettingsPanel';
+import GuidePanel from './GuidePanel';
 
 interface DashboardProps {
   devices: Device[];
@@ -23,7 +25,7 @@ interface DashboardProps {
   onCommand: (id: string, cmd: DeviceCommand) => void;
 }
 
-type TabId = 'devices' | 'inputs' | 'mappings' | 'settings';
+type TabId = 'devices' | 'inputs' | 'mappings' | 'settings' | 'guide';
 
 interface Tab {
   id: TabId;
@@ -36,6 +38,7 @@ const tabs: Tab[] = [
   { id: 'inputs', label: 'Eingaenge', icon: MousePointerClick },
   { id: 'mappings', label: 'Mappings', icon: Link },
   { id: 'settings', label: 'Einstellungen', icon: Settings },
+  { id: 'guide', label: 'Anleitung', icon: BookOpen },
 ];
 
 export default function Dashboard({
@@ -159,6 +162,7 @@ export default function Dashboard({
         {activeTab === 'inputs' && <InputList inputs={inputs} loading={loading} />}
         {activeTab === 'mappings' && <MappingConfig devices={devices} />}
         {activeTab === 'settings' && <SettingsPanel />}
+        {activeTab === 'guide' && <GuidePanel />}
       </main>
     </div>
   );
