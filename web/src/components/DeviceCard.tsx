@@ -42,6 +42,61 @@ function getDeviceIcon(type: string) {
 
 const isSensorOnly = (device: Device) => device.type === 'sensor' || device.type === 'meter';
 
+const modelNames: Record<string, string> = {
+  // Wall Display
+  'SAWD-0A1XX10EU1': 'Shelly Wall Display',
+  // Plus series
+  'SNSW-001X16EU': 'Shelly Plus 1',
+  'SNSW-001P16EU': 'Shelly Plus 1 PM',
+  'SNSW-102P16EU': 'Shelly Plus 2 PM',
+  'SNPL-00112EU': 'Shelly Plus Plug S',
+  'SNDM-00100WW': 'Shelly Plus Dimmer 0-10V',
+  'SNDC-0D4P10WW': 'Shelly Plus RGBW PM',
+  'SNSN-0024X': 'Shelly Plus i4',
+  'SNSN-0D24X': 'Shelly Plus i4 DC',
+  'SNSN-0031Z': 'Shelly Plus H&T',
+  'SNSN-0043X': 'Shelly Plus Smoke',
+  // Pro series
+  'SPSW-001XE16EU': 'Shelly Pro 1',
+  'SPSW-001PE16EU': 'Shelly Pro 1 PM',
+  'SPSW-002XE16EU': 'Shelly Pro 2',
+  'SPSW-002PE16EU': 'Shelly Pro 2 PM',
+  'SPSW-004PE16EU': 'Shelly Pro 4 PM',
+  'SPSH-002PE16EU': 'Shelly Pro Dual Cover PM',
+  'SPDM-001PE01EU': 'Shelly Pro Dimmer 1PM',
+  'SPDM-002PE01EU': 'Shelly Pro Dimmer 2PM',
+  'SPEM-003CEBEU': 'Shelly Pro 3EM',
+  'SPEM-003CEBEU400': 'Shelly Pro 3EM 400A',
+  'SPEM-002CEBEU50': 'Shelly Pro EM 50',
+  // Mini series
+  'SNSW-001X8EU': 'Shelly Plus 1 Mini',
+  'SNSW-001P8EU': 'Shelly Plus 1 PM Mini',
+  'SNPM-001PCEU16': 'Shelly PM Mini Gen3',
+  // Gen3
+  'S3SW-001X16EU': 'Shelly 1 Gen3',
+  'S3SW-001P16EU': 'Shelly 1 PM Gen3',
+  'S3SW-002P16EU': 'Shelly 2 PM Gen3',
+  'S3DM-0010WW': 'Shelly Dimmer 0/1-10V PM Gen3',
+  'S3SN-0U12A': 'Shelly i4 Gen3',
+  'S3EM-002CXCEU': 'Shelly EM Gen3',
+  // Gen4
+  'S4SW-001P16EU': 'Shelly 1 PM Gen4',
+  // BLU series
+  'SBBT-002C': 'Shelly BLU Button1',
+  'SBDW-002C': 'Shelly BLU Door/Window',
+  'SBMO-003Z': 'Shelly BLU Motion',
+  'SBHT-003C': 'Shelly BLU H&T',
+  // Other
+  'SNSN-0013A': 'Shelly Plus Flood',
+  'SFLW-001': 'Shelly Flood',
+  'S3CG-001': 'Shelly BLU Gateway Gen3',
+};
+
+function getProductName(model: string): string | null {
+  return modelNames[model] || null;
+}
+
+
 export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
   const Icon = getDeviceIcon(device.type);
 
@@ -80,6 +135,9 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
           </div>
           <div>
             <h3 className="font-semibold text-white text-sm">{device.name}</h3>
+            {getProductName(device.model) && (
+              <p className="text-xs text-gray-300">{getProductName(device.model)}</p>
+            )}
             <p className="text-xs text-gray-400">
               {device.model} &middot;{' '}
               <a
