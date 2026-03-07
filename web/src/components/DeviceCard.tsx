@@ -332,54 +332,42 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
       {/* Energy Meter (3-phase) */}
       {device.capabilities.supports_energy_meter && (
         <div className="mb-3 space-y-1">
-          {device.state.total_power !== undefined && device.state.total_power !== 0 && (
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-xs text-gray-400">
-                <Zap size={14} className="text-yellow-400" />
-                Gesamtleistung
-              </span>
-              <span className="text-sm font-medium text-white">{device.state.total_power.toFixed(1)} W</span>
-            </div>
-          )}
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs text-gray-400">
+              <Zap size={14} className="text-yellow-400" />
+              Gesamtleistung
+            </span>
+            <span className="text-sm font-medium text-white">{(device.state.total_power ?? 0).toFixed(1)} W</span>
+          </div>
           {[
             { label: 'Phase A', power: device.state.power_a, voltage: device.state.voltage_a, current: device.state.current_a },
             { label: 'Phase B', power: device.state.power_b, voltage: device.state.voltage_b, current: device.state.current_b },
             { label: 'Phase C', power: device.state.power_c, voltage: device.state.voltage_c, current: device.state.current_c },
           ].map((phase) => (
-            (phase.power !== undefined && phase.power !== 0) || (phase.voltage !== undefined && phase.voltage !== 0) ? (
-              <div key={phase.label} className="flex items-center justify-between text-xs">
-                <span className="text-gray-500">{phase.label}</span>
-                <span className="text-gray-300">
-                  {phase.voltage?.toFixed(0) ?? '-'} V / {phase.current?.toFixed(2) ?? '-'} A / {phase.power?.toFixed(1) ?? '-'} W
-                </span>
-              </div>
-            ) : null
-          ))}
-          {device.state.total_energy !== undefined && device.state.total_energy > 0 && (
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-gray-500">Energie</span>
-              <span className="text-gray-300">{(device.state.total_energy / 1000).toFixed(2)} kWh</span>
+            <div key={phase.label} className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">{phase.label}</span>
+              <span className="text-gray-300">
+                {(phase.voltage ?? 0).toFixed(0)} V / {(phase.current ?? 0).toFixed(2)} A / {(phase.power ?? 0).toFixed(1)} W
+              </span>
             </div>
-          )}
+          ))}
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">Energie</span>
+            <span className="text-gray-300">{((device.state.total_energy ?? 0) / 1000).toFixed(2)} kWh</span>
+          </div>
         </div>
       )}
 
       {/* Power Consumption (single-phase) */}
-      {device.capabilities.supports_power && !device.capabilities.supports_energy_meter && device.state.power !== undefined && (
+      {device.capabilities.supports_power && !device.capabilities.supports_energy_meter && (
         <div className="flex items-center gap-1 text-xs text-gray-400 mt-2 pt-2 border-t border-gray-700">
           <Zap size={12} className="text-yellow-400" />
-          <span>{device.state.power.toFixed(1)} W</span>
-          {device.state.voltage !== undefined && device.state.voltage > 0 && (
-            <span className="ml-2">{device.state.voltage.toFixed(0)} V</span>
-          )}
-          {device.state.current !== undefined && device.state.current > 0 && (
-            <span className="ml-2">{device.state.current.toFixed(2)} A</span>
-          )}
-          {device.state.energy !== undefined && (
-            <span className="ml-2">
-              {(device.state.energy / 1000).toFixed(2)} kWh
-            </span>
-          )}
+          <span>{(device.state.power ?? 0).toFixed(1)} W</span>
+          <span className="ml-2">{(device.state.voltage ?? 0).toFixed(0)} V</span>
+          <span className="ml-2">{(device.state.current ?? 0).toFixed(2)} A</span>
+          <span className="ml-2">
+            {((device.state.energy ?? 0) / 1000).toFixed(2)} kWh
+          </span>
         </div>
       )}
 
