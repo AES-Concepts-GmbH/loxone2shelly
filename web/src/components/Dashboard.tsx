@@ -164,7 +164,7 @@ export default function Dashboard({
             onCommand={onCommand}
           />
         )}
-        {activeTab === 'inputs' && <InputList inputs={inputs} loading={loading} />}
+        {activeTab === 'inputs' && <InputList inputs={inputs} devices={devices} loading={loading} />}
         {activeTab === 'webhooks' && <WebhookPanel events={webhookEvents} devices={devices} />}
         {activeTab === 'mappings' && <MappingConfig devices={devices} />}
         {activeTab === 'settings' && <SettingsPanel />}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Radio, Trash2, Copy, CheckCircle, ExternalLink } from 'lucide-react';
+import { Search, Radio, Copy, CheckCircle, ExternalLink } from 'lucide-react';
 import type { WebhookEvent, Device } from '../types';
 
 interface WebhookPanelProps {
