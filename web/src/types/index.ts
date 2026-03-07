@@ -137,10 +137,20 @@ export interface ShellyConfig {
   poll_interval: number;
 }
 
+export interface MQTTConfig {
+  enabled: boolean;
+  broker: string;
+  username: string;
+  password: string;
+  client_id: string;
+  topic_prefix: string;
+}
+
 export interface ConfigResponse {
   server: { port: number; host: string };
   shelly: ShellyConfig;
   loxone: LoxoneConfig;
+  mqtt: MQTTConfig;
   logging: { level: string; format: string };
 }
 

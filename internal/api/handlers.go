@@ -390,6 +390,7 @@ type ConfigResponse struct {
 	Server  config.ServerConfig  `json:"server"`
 	Shelly  config.ShellyConfig  `json:"shelly"`
 	Loxone  config.LoxoneConfig  `json:"loxone"`
+	MQTT    config.MQTTConfig    `json:"mqtt"`
 	Logging config.LoggingConfig `json:"logging"`
 }
 
@@ -400,6 +401,7 @@ func (h *Handlers) GetConfig(w http.ResponseWriter, r *http.Request) {
 		Server:  cfg.Server,
 		Shelly:  cfg.Shelly,
 		Loxone:  cfg.Loxone,
+		MQTT:    cfg.MQTT,
 		Logging: cfg.Logging,
 	}
 	jsonResponse(w, http.StatusOK, resp)
@@ -417,6 +419,7 @@ func (h *Handlers) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.Server = update.Server
 	cfg.Shelly = update.Shelly
 	cfg.Loxone = update.Loxone
+	cfg.MQTT = update.MQTT
 	cfg.Logging = update.Logging
 
 	config.UpdateShelly(update.Shelly)

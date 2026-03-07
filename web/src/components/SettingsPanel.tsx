@@ -18,6 +18,7 @@ import {
   XCircle,
   Eye,
   EyeOff,
+  MessageSquare,
 } from 'lucide-react';
 import type {
   ConfigResponse,
@@ -42,6 +43,7 @@ export default function SettingsPanel() {
   const [editingMs, setEditingMs] = useState<MiniserverConfig | null>(null);
   const [isCreatingMs, setIsCreatingMs] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [showMqttPassword, setShowMqttPassword] = useState(false);
 
   // Shelly devices
   const [shellyDevices, setShellyDevices] = useState<ShellyDeviceConfig[]>([]);
@@ -299,6 +301,7 @@ export default function SettingsPanel() {
   const sections = [
     { id: 'loxone', label: 'Loxone Miniserver', icon: Server },
     { id: 'shelly', label: 'Shelly Geräte', icon: Wifi },
+    { id: 'mqtt', label: 'MQTT Broker', icon: MessageSquare },
     { id: 'backups', label: 'Backup & Restore', icon: HardDrive },
     { id: 'logs', label: 'Server Logs', icon: ScrollText },
   ];
@@ -728,6 +731,124 @@ export default function SettingsPanel() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* MQTT Section */}
+      {activeSection === 'mqtt' && config && (
+        <div className="space-y-3">
+          <div className="bg-gray-800 rounded-xl p-4 shadow-lg">
+            <h3 className="text-sm font-semibold text-white mb-3">MQTT Broker Konfiguration</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="md:col-span-2">
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <div className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={config.mqtt?.enabled || false}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          mqtt: { ...config.mqtt, enabled: e.target.checked },
+                        })
+                      }
+                    />
+                    <span className="toggle-slider"></span>
+                  </div>
+                  MQTT aktiviert
+                </label>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Broker-Adresse</label>
+                <input
+                  type="text"
+                  value={config.mqtt?.broker || ''}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      mqtt: { ...config.mqtt, broker: e.target.value },
+                    })
+                  }
+                  placeholder="tcp://mosquitto:1883"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Client ID</label>
+                <input
+                  type="text"
+                  value={config.mqtt?.client_id || ''}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      mqtt: { ...config.mqtt, client_id: e.target.value },
+                    })
+                  }
+                  placeholder="loxone2shelly"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Topic Prefix</label>
+                <input
+                  type="text"
+                  value={config.mqtt?.topic_prefix || ''}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      mqtt: { ...config.mqtt, topic_prefix: e.target.value },
+                    })
+                  }
+                  placeholder="shellies"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Benutzername</label>
+                <input
+                  type="text"
+                  value={config.mqtt?.username || ''}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      mqtt: { ...config.mqtt, username: e.target.value },
+                    })
+                  }
+                  placeholder="(optional)"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Passwort</label>
+                <div className="relative">
+                  <input
+                    type={showMqttPassword ? 'text' : 'password'}
+                    value={config.mqtt?.password || ''}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        mqtt: { ...config.mqtt, password: e.target.value },
+                      })
+                    }
+                    placeholder="(optional)"
+                    className="w-full px-3 py-2 pr-10 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                  />
+                  <button
+                    onClick={() => setShowMqttPassword(!showMqttPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                  >
+                    {showMqttPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+            <p className="text-yellow-400 text-xs">
+              <strong>Hinweis:</strong> Änderungen an der MQTT-Konfiguration erfordern einen Neustart des Servers, um wirksam zu werden.
+            </p>
+          </div>
         </div>
       )}
 
