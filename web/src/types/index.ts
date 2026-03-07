@@ -1,7 +1,7 @@
 export interface Device {
   id: string;
   name: string;
-  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw"
+  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor"
   model: string;
   ip: string;
   generation: number;
@@ -22,6 +22,10 @@ export interface DeviceState {
   position?: number;
   power?: number;
   energy?: number;
+  temperature?: number;
+  humidity?: number;
+  illuminance?: number;
+  battery?: number;
 }
 
 export interface Capabilities {
@@ -30,6 +34,10 @@ export interface Capabilities {
   supports_dimming: boolean;
   supports_roller: boolean;
   supports_power: boolean;
+  supports_temperature: boolean;
+  supports_humidity: boolean;
+  supports_illuminance: boolean;
+  supports_battery: boolean;
 }
 
 export interface DeviceCommand {

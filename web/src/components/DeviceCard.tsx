@@ -7,6 +7,10 @@ import {
   ArrowUpDown,
   Wifi,
   WifiOff,
+  Thermometer,
+  Droplets,
+  Sun,
+  BatteryMedium,
 } from 'lucide-react';
 import type { Device, DeviceCommand } from '../types';
 
@@ -24,10 +28,14 @@ function getDeviceIcon(type: string) {
       return Lightbulb;
     case 'roller':
       return ArrowUpDown;
+    case 'sensor':
+      return Thermometer;
     default:
       return Power;
   }
 }
+
+const isSensorOnly = (device: Device) => device.type === 'sensor';
 
 export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
   const Icon = getDeviceIcon(device.type);
@@ -51,7 +59,9 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
         <div className="flex items-center gap-3">
           <div
             className={`p-2 rounded-lg ${
-              device.state.on ? 'bg-shelly-blue/20 text-shelly-blue' : 'bg-gray-700 text-gray-400'
+              isSensorOnly(device)
+                ? 'bg-orange-500/20 text-orange-400'
+                : device.state.on ? 'bg-shelly-blue/20 text-shelly-blue' : 'bg-gray-700 text-gray-400'
             }`}
           >
             <Icon size={20} />
@@ -78,25 +88,27 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
         </div>
       </div>
 
-      {/* Power Toggle */}
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm text-gray-300">
-          {device.state.on ? 'Eingeschaltet' : 'Ausgeschaltet'}
-        </span>
-        <button
-          onClick={handleToggle}
-          disabled={!device.online}
-          className={`transition-colors ${
-            !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-          }`}
-        >
-          {device.state.on ? (
-            <ToggleRight size={32} className="text-shelly-blue" />
-          ) : (
-            <ToggleLeft size={32} className="text-gray-500" />
-          )}
-        </button>
-      </div>
+      {/* Power Toggle (hidden for sensor-only devices) */}
+      {!isSensorOnly(device) && (
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-gray-300">
+            {device.state.on ? 'Eingeschaltet' : 'Ausgeschaltet'}
+          </span>
+          <button
+            onClick={handleToggle}
+            disabled={!device.online}
+            className={`transition-colors ${
+              !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+            }`}
+          >
+            {device.state.on ? (
+              <ToggleRight size={32} className="text-shelly-blue" />
+            ) : (
+              <ToggleLeft size={32} className="text-gray-500" />
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Brightness Slider (for dimmers/lights) */}
       {device.capabilities.supports_dimming && (
@@ -150,6 +162,47 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
               backgroundColor: `rgb(${device.state.red ?? 0}, ${device.state.green ?? 0}, ${device.state.blue ?? 0})`,
             }}
           />
+        </div>
+      )}
+
+      {/* Sensor Data */}
+      {(device.capabilities.supports_temperature || device.capabilities.supports_humidity || device.capabilities.supports_illuminance) && (
+        <div className="mb-3 space-y-2">
+          {device.capabilities.supports_temperature && device.state.temperature !== undefined && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                <Thermometer size={14} className="text-orange-400" />
+                Temperatur
+              </span>
+              <span className="text-sm font-medium text-white">{device.state.temperature.toFixed(1)} °C</span>
+            </div>
+          )}
+          {device.capabilities.supports_humidity && device.state.humidity !== undefined && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                <Droplets size={14} className="text-blue-400" />
+                Luftfeuchtigkeit
+              </span>
+              <span className="text-sm font-medium text-white">{device.state.humidity.toFixed(1)} %</span>
+            </div>
+          )}
+          {device.capabilities.supports_illuminance && device.state.illuminance !== undefined && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                <Sun size={14} className="text-yellow-300" />
+                Helligkeit
+              </span>
+              <span className="text-sm font-medium text-white">{device.state.illuminance.toFixed(0)} Lux</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Battery */}
+      {device.capabilities.supports_battery && device.state.battery !== undefined && (
+        <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-3">
+          <BatteryMedium size={14} className={device.state.battery > 20 ? 'text-green-400' : 'text-red-400'} />
+          <span>Batterie {device.state.battery.toFixed(0)} %</span>
         </div>
       )}
 

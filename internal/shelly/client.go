@@ -433,6 +433,45 @@ func (c *Client) parseGen2Status(status map[string]interface{}, device *models.D
 			device.State.White = int(w)
 		}
 	}
+
+	// Check for temperature sensor (Wall Display, H&T, etc.)
+	if temp, ok := status["temperature:0"].(map[string]interface{}); ok {
+		if tC, ok := temp["tC"].(float64); ok {
+			device.State.Temperature = &tC
+			device.Capabilities.SupportsTemperature = true
+		}
+	}
+
+	// Check for humidity sensor (Wall Display, H&T, etc.)
+	if hum, ok := status["humidity:0"].(map[string]interface{}); ok {
+		if rh, ok := hum["rh"].(float64); ok {
+			device.State.Humidity = &rh
+			device.Capabilities.SupportsHumidity = true
+		}
+	}
+
+	// Check for illuminance sensor (Wall Display)
+	if ill, ok := status["illuminance:0"].(map[string]interface{}); ok {
+		if lux, ok := ill["lux"].(float64); ok {
+			device.State.Illuminance = &lux
+			device.Capabilities.SupportsIlluminance = true
+		}
+	}
+
+	// Check for devicepower (battery-powered devices like BLU H&T)
+	if dp, ok := status["devicepower:0"].(map[string]interface{}); ok {
+		if bat, ok := dp["battery"].(map[string]interface{}); ok {
+			if pct, ok := bat["percent"].(float64); ok {
+				device.State.Battery = &pct
+				device.Capabilities.SupportsBattery = true
+			}
+		}
+	}
+
+	// If device only has sensors and no actuators, mark as sensor type
+	if device.Type == "" && (device.Capabilities.SupportsTemperature || device.Capabilities.SupportsHumidity) {
+		device.Type = "sensor"
+	}
 }
 
 // appToDeviceType maps the Gen2 "app" field to a device type
@@ -451,6 +490,11 @@ func (c *Client) appToDeviceType(app string) string {
 		return "rgbw"
 	case strings.Contains(app, "plug"), strings.Contains(app, "switch"), strings.Contains(app, "relay"):
 		return "switch"
+	case strings.Contains(app, "walldisplay"):
+		// Wall Display has relay + sensors; type determined by parseGen2Status
+		return ""
+	case strings.Contains(app, "blu"), strings.Contains(app, "sensor"), strings.Contains(app, "ht"):
+		return "sensor"
 	default:
 		return "switch"
 	}

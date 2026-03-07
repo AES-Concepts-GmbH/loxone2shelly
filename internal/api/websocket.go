@@ -192,6 +192,26 @@ func (h *WebSocketHub) sendFeedback(event shelly.Event) {
 		props = append(props, feedbackProp{"power", fmt.Sprintf("%.1f", state.Power)})
 	}
 
+	// temperature (°C)
+	if state.Temperature != nil {
+		props = append(props, feedbackProp{"temp", fmt.Sprintf("%.1f", *state.Temperature)})
+	}
+
+	// humidity (%RH)
+	if state.Humidity != nil {
+		props = append(props, feedbackProp{"hum", fmt.Sprintf("%.1f", *state.Humidity)})
+	}
+
+	// illuminance (Lux)
+	if state.Illuminance != nil {
+		props = append(props, feedbackProp{"lux", fmt.Sprintf("%.0f", *state.Illuminance)})
+	}
+
+	// battery (%)
+	if state.Battery != nil {
+		props = append(props, feedbackProp{"bat", fmt.Sprintf("%.0f", *state.Battery)})
+	}
+
 	miniserverID := mapping.MiniserverID
 
 	for _, prop := range props {
