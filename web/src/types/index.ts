@@ -1,7 +1,7 @@
 export interface Device {
   id: string;
   name: string;
-  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor"
+  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor", "meter"
   model: string;
   ip: string;
   generation: number;
@@ -9,6 +9,7 @@ export interface Device {
   state: DeviceState;
   capabilities: Capabilities;
   online: boolean;
+  channels?: Channel[];
 }
 
 export interface DeviceState {
@@ -21,11 +22,39 @@ export interface DeviceState {
   white?: number;
   position?: number;
   power?: number;
+  voltage?: number;
+  current?: number;
   energy?: number;
   temperature?: number;
   humidity?: number;
   illuminance?: number;
   battery?: number;
+  smoke?: boolean;
+  flood?: boolean;
+  // Energy meter fields (3-phase)
+  total_power?: number;
+  power_a?: number;
+  power_b?: number;
+  power_c?: number;
+  voltage_a?: number;
+  voltage_b?: number;
+  voltage_c?: number;
+  current_a?: number;
+  current_b?: number;
+  current_c?: number;
+  total_energy?: number;
+}
+
+export interface Channel {
+  index: number;
+  type: string; // "switch", "light", "cover"
+  on: boolean;
+  brightness?: number;
+  position?: number;
+  power?: number;
+  voltage?: number;
+  current?: number;
+  energy?: number;
 }
 
 export interface Capabilities {
@@ -38,6 +67,11 @@ export interface Capabilities {
   supports_humidity: boolean;
   supports_illuminance: boolean;
   supports_battery: boolean;
+  supports_smoke: boolean;
+  supports_flood: boolean;
+  supports_energy_meter: boolean;
+  multi_channel: boolean;
+  channel_count?: number;
 }
 
 export interface DeviceCommand {
@@ -45,6 +79,7 @@ export interface DeviceCommand {
   brightness?: number;
   color_temp?: number;
   position?: number;
+  channel?: number;
 }
 
 export interface Input {

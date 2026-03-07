@@ -192,6 +192,16 @@ func (h *WebSocketHub) sendFeedback(event shelly.Event) {
 		props = append(props, feedbackProp{"power", fmt.Sprintf("%.1f", state.Power)})
 	}
 
+	// voltage (V)
+	if state.Voltage > 0 {
+		props = append(props, feedbackProp{"voltage", fmt.Sprintf("%.1f", state.Voltage)})
+	}
+
+	// current (A)
+	if state.Current > 0 {
+		props = append(props, feedbackProp{"current", fmt.Sprintf("%.3f", state.Current)})
+	}
+
 	// temperature (°C)
 	if state.Temperature != nil {
 		props = append(props, feedbackProp{"temp", fmt.Sprintf("%.1f", *state.Temperature)})
@@ -210,6 +220,59 @@ func (h *WebSocketHub) sendFeedback(event shelly.Event) {
 	// battery (%)
 	if state.Battery != nil {
 		props = append(props, feedbackProp{"bat", fmt.Sprintf("%.0f", *state.Battery)})
+	}
+
+	// smoke alarm (0/1)
+	if state.Smoke != nil {
+		smokeVal := 0
+		if *state.Smoke {
+			smokeVal = 1
+		}
+		props = append(props, feedbackProp{"smoke", smokeVal})
+	}
+
+	// flood alarm (0/1)
+	if state.Flood != nil {
+		floodVal := 0
+		if *state.Flood {
+			floodVal = 1
+		}
+		props = append(props, feedbackProp{"flood", floodVal})
+	}
+
+	// Energy meter (3-phase)
+	if state.TotalPower != 0 {
+		props = append(props, feedbackProp{"total_power", fmt.Sprintf("%.1f", state.TotalPower)})
+	}
+	if state.PowerA != 0 {
+		props = append(props, feedbackProp{"power_a", fmt.Sprintf("%.1f", state.PowerA)})
+	}
+	if state.PowerB != 0 {
+		props = append(props, feedbackProp{"power_b", fmt.Sprintf("%.1f", state.PowerB)})
+	}
+	if state.PowerC != 0 {
+		props = append(props, feedbackProp{"power_c", fmt.Sprintf("%.1f", state.PowerC)})
+	}
+	if state.VoltageA != 0 {
+		props = append(props, feedbackProp{"voltage_a", fmt.Sprintf("%.1f", state.VoltageA)})
+	}
+	if state.VoltageB != 0 {
+		props = append(props, feedbackProp{"voltage_b", fmt.Sprintf("%.1f", state.VoltageB)})
+	}
+	if state.VoltageC != 0 {
+		props = append(props, feedbackProp{"voltage_c", fmt.Sprintf("%.1f", state.VoltageC)})
+	}
+	if state.CurrentA != 0 {
+		props = append(props, feedbackProp{"current_a", fmt.Sprintf("%.3f", state.CurrentA)})
+	}
+	if state.CurrentB != 0 {
+		props = append(props, feedbackProp{"current_b", fmt.Sprintf("%.3f", state.CurrentB)})
+	}
+	if state.CurrentC != 0 {
+		props = append(props, feedbackProp{"current_c", fmt.Sprintf("%.3f", state.CurrentC)})
+	}
+	if state.TotalEnergy > 0 {
+		props = append(props, feedbackProp{"total_energy", fmt.Sprintf("%.1f", state.TotalEnergy)})
 	}
 
 	miniserverID := mapping.MiniserverID

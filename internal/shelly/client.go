@@ -349,52 +349,142 @@ func (c *Client) queryDeviceGen1(d *DeviceInfo, device *models.Device) {
 	}
 }
 
+// parseGen2Status dynamically parses all Gen2+ status components
 func (c *Client) parseGen2Status(status map[string]interface{}, device *models.Device) {
-	// Check for switch:0
-	if sw, ok := status["switch:0"].(map[string]interface{}); ok {
-		if device.Type == "" {
-			device.Type = "switch"
+	switchCount := 0
+	lightCount := 0
+	coverCount := 0
+
+	// Parse all switch:N components
+	for i := 0; i < 4; i++ {
+		key := fmt.Sprintf("switch:%d", i)
+		sw, ok := status[key].(map[string]interface{})
+		if !ok {
+			continue
 		}
+		switchCount++
+
+		ch := models.Channel{Index: i, Type: "switch"}
 		if output, ok := sw["output"].(bool); ok {
-			device.State.On = output
+			ch.On = output
 		}
 		if power, ok := sw["apower"].(float64); ok {
-			device.State.Power = power
-			device.Capabilities.SupportsPower = true
+			ch.Power = power
+		}
+		if voltage, ok := sw["voltage"].(float64); ok {
+			ch.Voltage = voltage
+		}
+		if current, ok := sw["current"].(float64); ok {
+			ch.Current = current
 		}
 		if energy, ok := sw["aenergy"].(map[string]interface{}); ok {
 			if total, ok := energy["total"].(float64); ok {
-				device.State.Energy = total
+				ch.Energy = total
 			}
 		}
+
+		// First channel populates primary state
+		if i == 0 {
+			device.State.On = ch.On
+			device.State.Power = ch.Power
+			device.State.Voltage = ch.Voltage
+			device.State.Current = ch.Current
+			device.State.Energy = ch.Energy
+			if ch.Power > 0 || ch.Voltage > 0 {
+				device.Capabilities.SupportsPower = true
+			}
+		}
+
+		device.Channels = append(device.Channels, ch)
 	}
 
-	// Check for light:0
-	if lt, ok := status["light:0"].(map[string]interface{}); ok {
-		device.Type = "light"
-		device.Capabilities.SupportsDimming = true
+	if switchCount > 0 && device.Type == "" {
+		device.Type = "switch"
+	}
+	if switchCount > 1 {
+		device.Capabilities.MultiChannel = true
+		device.Capabilities.ChannelCount = switchCount
+	}
+
+	// Parse all light:N components
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("light:%d", i)
+		lt, ok := status[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		lightCount++
+
+		ch := models.Channel{Index: i, Type: "light"}
 		if output, ok := lt["output"].(bool); ok {
-			device.State.On = output
+			ch.On = output
 		}
 		if bri, ok := lt["brightness"].(float64); ok {
-			device.State.Brightness = bri
+			ch.Brightness = bri
 		}
+		if power, ok := lt["apower"].(float64); ok {
+			ch.Power = power
+		}
+
+		if i == 0 {
+			device.State.On = ch.On
+			device.State.Brightness = ch.Brightness
+			device.State.Power = ch.Power
+			device.Capabilities.SupportsDimming = true
+			if ch.Power > 0 {
+				device.Capabilities.SupportsPower = true
+			}
+		}
+
+		device.Channels = append(device.Channels, ch)
 	}
 
-	// Check for cover:0
-	if cover, ok := status["cover:0"].(map[string]interface{}); ok {
-		device.Type = "roller"
-		device.Capabilities.SupportsRoller = true
+	if lightCount > 0 {
+		device.Type = "light"
+	}
+	if lightCount > 1 {
+		device.Capabilities.MultiChannel = true
+		device.Capabilities.ChannelCount = lightCount
+	}
+
+	// Parse all cover:N components
+	for i := 0; i < 2; i++ {
+		key := fmt.Sprintf("cover:%d", i)
+		cover, ok := status[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		coverCount++
+
+		ch := models.Channel{Index: i, Type: "cover"}
 		if pos, ok := cover["current_pos"].(float64); ok {
-			device.State.Position = int(pos)
+			ch.Position = int(pos)
 		}
 		if power, ok := cover["apower"].(float64); ok {
-			device.State.Power = power
-			device.Capabilities.SupportsPower = true
+			ch.Power = power
 		}
+
+		if i == 0 {
+			device.State.Position = ch.Position
+			device.State.Power = ch.Power
+			device.Capabilities.SupportsRoller = true
+			if ch.Power > 0 {
+				device.Capabilities.SupportsPower = true
+			}
+		}
+
+		device.Channels = append(device.Channels, ch)
 	}
 
-	// Check for rgb:0 or rgbw:0
+	if coverCount > 0 {
+		device.Type = "roller"
+	}
+	if coverCount > 1 {
+		device.Capabilities.MultiChannel = true
+		device.Capabilities.ChannelCount = coverCount
+	}
+
+	// RGB
 	if rgb, ok := status["rgb:0"].(map[string]interface{}); ok {
 		device.Type = "rgb"
 		device.Capabilities.SupportsColor = true
@@ -413,6 +503,7 @@ func (c *Client) parseGen2Status(status map[string]interface{}, device *models.D
 		}
 	}
 
+	// RGBW
 	if rgbw, ok := status["rgbw:0"].(map[string]interface{}); ok {
 		device.Type = "rgbw"
 		device.Capabilities.SupportsColor = true
@@ -434,23 +525,63 @@ func (c *Client) parseGen2Status(status map[string]interface{}, device *models.D
 		}
 	}
 
-	// Check for temperature sensor (Wall Display, H&T, etc.)
-	if temp, ok := status["temperature:0"].(map[string]interface{}); ok {
+	// CCT (tunable white)
+	if cct, ok := status["cct:0"].(map[string]interface{}); ok {
+		device.Type = "light"
+		device.Capabilities.SupportsDimming = true
+		device.Capabilities.SupportsColorTemp = true
+		if output, ok := cct["output"].(bool); ok {
+			device.State.On = output
+		}
+		if bri, ok := cct["brightness"].(float64); ok {
+			device.State.Brightness = bri
+		}
+		if ct, ok := cct["ct"].(float64); ok {
+			device.State.ColorTemp = int(ct)
+		}
+	}
+
+	// --- Sensor components ---
+
+	// Temperature sensors (built-in and add-on with IDs 100+)
+	for i := 0; i < 200; i++ {
+		key := fmt.Sprintf("temperature:%d", i)
+		temp, ok := status[key].(map[string]interface{})
+		if !ok {
+			// Skip gaps between 4 and 100 for add-on sensors
+			if i > 4 && i < 100 {
+				i = 99
+			}
+			continue
+		}
 		if tC, ok := temp["tC"].(float64); ok {
-			device.State.Temperature = &tC
+			// Only first temperature populates primary state
+			if device.State.Temperature == nil {
+				device.State.Temperature = &tC
+			}
 			device.Capabilities.SupportsTemperature = true
 		}
 	}
 
-	// Check for humidity sensor (Wall Display, H&T, etc.)
-	if hum, ok := status["humidity:0"].(map[string]interface{}); ok {
+	// Humidity sensors (built-in and add-on)
+	for i := 0; i < 200; i++ {
+		key := fmt.Sprintf("humidity:%d", i)
+		hum, ok := status[key].(map[string]interface{})
+		if !ok {
+			if i > 4 && i < 100 {
+				i = 99
+			}
+			continue
+		}
 		if rh, ok := hum["rh"].(float64); ok {
-			device.State.Humidity = &rh
+			if device.State.Humidity == nil {
+				device.State.Humidity = &rh
+			}
 			device.Capabilities.SupportsHumidity = true
 		}
 	}
 
-	// Check for illuminance sensor (Wall Display)
+	// Illuminance
 	if ill, ok := status["illuminance:0"].(map[string]interface{}); ok {
 		if lux, ok := ill["lux"].(float64); ok {
 			device.State.Illuminance = &lux
@@ -458,7 +589,23 @@ func (c *Client) parseGen2Status(status map[string]interface{}, device *models.D
 		}
 	}
 
-	// Check for devicepower (battery-powered devices like BLU H&T)
+	// Smoke alarm
+	if smoke, ok := status["smoke:0"].(map[string]interface{}); ok {
+		if alarm, ok := smoke["alarm"].(bool); ok {
+			device.State.Smoke = &alarm
+			device.Capabilities.SupportsSmoke = true
+		}
+	}
+
+	// Flood alarm
+	if flood, ok := status["flood:0"].(map[string]interface{}); ok {
+		if alarm, ok := flood["alarm"].(bool); ok {
+			device.State.Flood = &alarm
+			device.Capabilities.SupportsFlood = true
+		}
+	}
+
+	// Battery (devicepower:0)
 	if dp, ok := status["devicepower:0"].(map[string]interface{}); ok {
 		if bat, ok := dp["battery"].(map[string]interface{}); ok {
 			if pct, ok := bat["percent"].(float64); ok {
@@ -468,9 +615,140 @@ func (c *Client) parseGen2Status(status map[string]interface{}, device *models.D
 		}
 	}
 
-	// If device only has sensors and no actuators, mark as sensor type
-	if device.Type == "" && (device.Capabilities.SupportsTemperature || device.Capabilities.SupportsHumidity) {
-		device.Type = "sensor"
+	// --- Energy meter components ---
+
+	// 3-phase energy meter (em:0) - Pro 3EM, 3EM Gen3
+	if em, ok := status["em:0"].(map[string]interface{}); ok {
+		device.Capabilities.SupportsEnergyMeter = true
+		device.Capabilities.SupportsPower = true
+		if device.Type == "" || device.Type == "switch" {
+			device.Type = "meter"
+		}
+		if p, ok := em["total_act_power"].(float64); ok {
+			device.State.TotalPower = p
+			device.State.Power = p
+		}
+		if p, ok := em["a_act_power"].(float64); ok {
+			device.State.PowerA = p
+		}
+		if p, ok := em["b_act_power"].(float64); ok {
+			device.State.PowerB = p
+		}
+		if p, ok := em["c_act_power"].(float64); ok {
+			device.State.PowerC = p
+		}
+		if v, ok := em["a_voltage"].(float64); ok {
+			device.State.VoltageA = v
+		}
+		if v, ok := em["b_voltage"].(float64); ok {
+			device.State.VoltageB = v
+		}
+		if v, ok := em["c_voltage"].(float64); ok {
+			device.State.VoltageC = v
+		}
+		if a, ok := em["a_current"].(float64); ok {
+			device.State.CurrentA = a
+		}
+		if a, ok := em["b_current"].(float64); ok {
+			device.State.CurrentB = a
+		}
+		if a, ok := em["c_current"].(float64); ok {
+			device.State.CurrentC = a
+		}
+	}
+
+	// 3-phase energy data (emdata:0)
+	if emdata, ok := status["emdata:0"].(map[string]interface{}); ok {
+		if total, ok := emdata["total_act"].(float64); ok {
+			device.State.TotalEnergy = total
+			device.State.Energy = total
+		}
+	}
+
+	// Single-phase energy meters (em1:N) - Pro EM, EM Gen3
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("em1:%d", i)
+		em1, ok := status[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		device.Capabilities.SupportsEnergyMeter = true
+		device.Capabilities.SupportsPower = true
+		if device.Type == "" || device.Type == "switch" {
+			device.Type = "meter"
+		}
+		if i == 0 {
+			if p, ok := em1["act_power"].(float64); ok {
+				device.State.Power = p
+				device.State.PowerA = p
+			}
+			if v, ok := em1["voltage"].(float64); ok {
+				device.State.Voltage = v
+				device.State.VoltageA = v
+			}
+			if a, ok := em1["current"].(float64); ok {
+				device.State.Current = a
+				device.State.CurrentA = a
+			}
+		} else if i == 1 {
+			if p, ok := em1["act_power"].(float64); ok {
+				device.State.PowerB = p
+			}
+			if v, ok := em1["voltage"].(float64); ok {
+				device.State.VoltageB = v
+			}
+			if a, ok := em1["current"].(float64); ok {
+				device.State.CurrentB = a
+			}
+		}
+	}
+
+	// Single-phase energy data (em1data:N)
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("em1data:%d", i)
+		em1data, ok := status[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if total, ok := em1data["total_act_energy"].(float64); ok {
+			device.State.TotalEnergy += total
+			if i == 0 {
+				device.State.Energy = total
+			}
+		}
+	}
+
+	// Standalone power meter (pm1:0) - PM Mini Gen3
+	if pm1, ok := status["pm1:0"].(map[string]interface{}); ok {
+		device.Capabilities.SupportsPower = true
+		if device.Type == "" {
+			device.Type = "meter"
+		}
+		if p, ok := pm1["apower"].(float64); ok {
+			device.State.Power = p
+		}
+		if v, ok := pm1["voltage"].(float64); ok {
+			device.State.Voltage = v
+		}
+		if a, ok := pm1["current"].(float64); ok {
+			device.State.Current = a
+		}
+		if energy, ok := pm1["aenergy"].(map[string]interface{}); ok {
+			if total, ok := energy["total"].(float64); ok {
+				device.State.Energy = total
+			}
+		}
+	}
+
+	// Determine type for sensor-only devices
+	if device.Type == "" {
+		if device.Capabilities.SupportsSmoke || device.Capabilities.SupportsFlood {
+			device.Type = "sensor"
+		} else if device.Capabilities.SupportsTemperature || device.Capabilities.SupportsHumidity {
+			device.Type = "sensor"
+		} else if device.Capabilities.SupportsEnergyMeter {
+			device.Type = "meter"
+		}
 	}
 }
 
@@ -484,48 +762,60 @@ func (c *Client) appToDeviceType(app string) string {
 		return "dimmer"
 	case strings.Contains(app, "cover"), strings.Contains(app, "roller"):
 		return "roller"
-	case strings.Contains(app, "rgb"):
-		return "rgb"
 	case strings.Contains(app, "rgbw"):
 		return "rgbw"
-	case strings.Contains(app, "plug"), strings.Contains(app, "switch"), strings.Contains(app, "relay"):
+	case strings.Contains(app, "rgb"):
+		return "rgb"
+	case strings.Contains(app, "plug"):
+		return "switch"
+	case strings.Contains(app, "switch"), strings.Contains(app, "relay"):
 		return "switch"
 	case strings.Contains(app, "walldisplay"):
-		// Wall Display has relay + sensors; type determined by parseGen2Status
-		return ""
+		return "" // has relay + sensors; type determined by parseGen2Status
+	case strings.Contains(app, "em"), strings.Contains(app, "pm"):
+		return "" // energy meter; type determined by parseGen2Status
+	case strings.Contains(app, "i4"), strings.Contains(app, "input"):
+		return "switch" // input-only devices
+	case strings.Contains(app, "smoke"):
+		return "sensor"
+	case strings.Contains(app, "flood"):
+		return "sensor"
 	case strings.Contains(app, "blu"), strings.Contains(app, "sensor"), strings.Contains(app, "ht"):
 		return "sensor"
 	default:
-		return "switch"
+		return "" // let parseGen2Status determine from components
 	}
 }
 
 // --- SetDeviceState implementations ---
 
 func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) error {
-	// Determine what type of command to send based on what's set
+	// Determine target channel (default 0)
+	channelID := 0
+	if cmd.Channel != nil {
+		channelID = *cmd.Channel
+	}
+
 	if cmd.Position != nil {
-		// Cover/Roller command
 		payload := map[string]interface{}{
-			"id":  0,
+			"id":  channelID,
 			"pos": *cmd.Position,
 		}
 		_, err := c.rpcPost(dev.IP, "Cover.GoToPosition", payload)
 		if err != nil {
 			return fmt.Errorf("cover command failed for %s: %w", dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Int("pos", *cmd.Position).Msg("Cover position set (Gen2)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Int("pos", *cmd.Position).Msg("Cover position set (Gen2)")
 		return nil
 	}
 
 	if cmd.Brightness != nil {
-		// Light command with brightness
 		on := true
 		if cmd.On != nil {
 			on = *cmd.On
 		}
 		payload := map[string]interface{}{
-			"id":         0,
+			"id":         channelID,
 			"on":         on,
 			"brightness": int(*cmd.Brightness),
 		}
@@ -533,26 +823,24 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 		if err != nil {
 			return fmt.Errorf("light command failed for %s: %w", dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Bool("on", on).Float64("bri", *cmd.Brightness).Msg("Light set (Gen2)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", on).Float64("bri", *cmd.Brightness).Msg("Light set (Gen2)")
 		return nil
 	}
 
 	if cmd.On != nil {
-		// Simple switch on/off
 		payload := map[string]interface{}{
-			"id": 0,
+			"id": channelID,
 			"on": *cmd.On,
 		}
-		// Try Switch.Set first; for lights it could be Light.Set
+		// Try Switch.Set first; for lights fallback to Light.Set
 		_, err := c.rpcPost(dev.IP, "Switch.Set", payload)
 		if err != nil {
-			// Fallback to Light.Set
 			_, err2 := c.rpcPost(dev.IP, "Light.Set", payload)
 			if err2 != nil {
 				return fmt.Errorf("switch/light command failed for %s: %w", dev.ConfigID, err)
 			}
 		}
-		log.Info().Str("id", dev.ConfigID).Bool("on", *cmd.On).Msg("Switch set (Gen2)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", *cmd.On).Msg("Switch set (Gen2)")
 		return nil
 	}
 
@@ -561,7 +849,6 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 
 func (c *Client) setDeviceStateGen1(dev *DeviceInfo, cmd models.DeviceCommand) error {
 	if cmd.Position != nil {
-		// Roller command
 		path := fmt.Sprintf("roller/0?go=to_pos&roller_pos=%d", *cmd.Position)
 		_, err := c.gen1Get(dev.IP, path)
 		if err != nil {
@@ -572,7 +859,6 @@ func (c *Client) setDeviceStateGen1(dev *DeviceInfo, cmd models.DeviceCommand) e
 	}
 
 	if cmd.Brightness != nil {
-		// Dimmer command
 		on := "on"
 		if cmd.On != nil && !*cmd.On {
 			on = "off"
@@ -614,20 +900,25 @@ func (c *Client) queryInputs(d *DeviceInfo) []*models.Input {
 			return inputs
 		}
 
-		// Check for input:0, input:1, etc.
-		for i := 0; i < 4; i++ {
+		// Check for input:0 through input:3 (standard) and input:100+ (add-on)
+		for i := 0; i < 200; i++ {
 			key := fmt.Sprintf("input:%d", i)
-			if inp, ok := status[key].(map[string]interface{}); ok {
-				input := &models.Input{
-					ID:       fmt.Sprintf("%s_input_%d", d.ConfigID, i),
-					Name:     fmt.Sprintf("%s Input %d", d.Name, i),
-					DeviceID: d.ConfigID,
+			inp, ok := status[key].(map[string]interface{})
+			if !ok {
+				if i > 4 && i < 100 {
+					i = 99
 				}
-				if state, ok := inp["state"].(bool); ok {
-					input.State.State = &state
-				}
-				inputs = append(inputs, input)
+				continue
 			}
+			input := &models.Input{
+				ID:       fmt.Sprintf("%s_input_%d", d.ConfigID, i),
+				Name:     fmt.Sprintf("%s Input %d", d.Name, i),
+				DeviceID: d.ConfigID,
+			}
+			if state, ok := inp["state"].(bool); ok {
+				input.State.State = &state
+			}
+			inputs = append(inputs, input)
 		}
 	} else {
 		// Gen1: query /status and look for inputs

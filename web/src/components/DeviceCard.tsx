@@ -11,6 +11,9 @@ import {
   Droplets,
   Sun,
   BatteryMedium,
+  Flame,
+  AlertTriangle,
+  Gauge,
 } from 'lucide-react';
 import type { Device, DeviceCommand } from '../types';
 
@@ -30,18 +33,27 @@ function getDeviceIcon(type: string) {
       return ArrowUpDown;
     case 'sensor':
       return Thermometer;
+    case 'meter':
+      return Gauge;
     default:
       return Power;
   }
 }
 
-const isSensorOnly = (device: Device) => device.type === 'sensor';
+const isSensorOnly = (device: Device) => device.type === 'sensor' || device.type === 'meter';
 
 export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
   const Icon = getDeviceIcon(device.type);
 
-  const handleToggle = () => {
-    onCommand(device.id, { on: !device.state.on });
+  const handleToggle = (channel?: number) => {
+    if (channel !== undefined) {
+      const ch = device.channels?.[channel];
+      if (ch) {
+        onCommand(device.id, { on: !ch.on, channel });
+      }
+    } else {
+      onCommand(device.id, { on: !device.state.on });
+    }
   };
 
   const handleBrightness = (value: number) => {
@@ -88,26 +100,71 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
         </div>
       </div>
 
-      {/* Power Toggle (hidden for sensor-only devices) */}
-      {!isSensorOnly(device) && (
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-sm text-gray-300">
-            {device.state.on ? 'Eingeschaltet' : 'Ausgeschaltet'}
-          </span>
-          <button
-            onClick={handleToggle}
-            disabled={!device.online}
-            className={`transition-colors ${
-              !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-            }`}
-          >
-            {device.state.on ? (
-              <ToggleRight size={32} className="text-shelly-blue" />
-            ) : (
-              <ToggleLeft size={32} className="text-gray-500" />
-            )}
-          </button>
+      {/* Smoke Alarm */}
+      {device.capabilities.supports_smoke && device.state.smoke && (
+        <div className="flex items-center gap-2 mb-3 p-2 bg-red-900/30 rounded-lg border border-red-700">
+          <Flame size={16} className="text-red-500" />
+          <span className="text-sm font-medium text-red-400">Rauchalarm!</span>
         </div>
+      )}
+
+      {/* Flood Alarm */}
+      {device.capabilities.supports_flood && device.state.flood && (
+        <div className="flex items-center gap-2 mb-3 p-2 bg-red-900/30 rounded-lg border border-red-700">
+          <AlertTriangle size={16} className="text-red-500" />
+          <span className="text-sm font-medium text-red-400">Wasseralarm!</span>
+        </div>
+      )}
+
+      {/* Multi-Channel Controls */}
+      {device.capabilities.multi_channel && device.channels && device.channels.length > 1 ? (
+        <div className="mb-3 space-y-2">
+          {device.channels.map((ch, idx) => (
+            <div key={idx} className="flex items-center justify-between p-2 bg-gray-750 rounded-lg bg-gray-700/50">
+              <span className="text-sm text-gray-300">
+                Kanal {ch.index} ({ch.type})
+                {(ch.power ?? 0) > 0 && (
+                  <span className="ml-2 text-xs text-yellow-400">{ch.power!.toFixed(1)} W</span>
+                )}
+              </span>
+              <button
+                onClick={() => handleToggle(idx)}
+                disabled={!device.online}
+                className={`transition-colors ${
+                  !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                }`}
+              >
+                {ch.on ? (
+                  <ToggleRight size={28} className="text-shelly-blue" />
+                ) : (
+                  <ToggleLeft size={28} className="text-gray-500" />
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Single-Channel Power Toggle (hidden for sensor-only devices) */
+        !isSensorOnly(device) && (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-gray-300">
+              {device.state.on ? 'Eingeschaltet' : 'Ausgeschaltet'}
+            </span>
+            <button
+              onClick={() => handleToggle()}
+              disabled={!device.online}
+              className={`transition-colors ${
+                !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+              }`}
+            >
+              {device.state.on ? (
+                <ToggleRight size={32} className="text-shelly-blue" />
+              ) : (
+                <ToggleLeft size={32} className="text-gray-500" />
+              )}
+            </button>
+          </div>
+        )
       )}
 
       {/* Brightness Slider (for dimmers/lights) */}
@@ -206,11 +263,52 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
         </div>
       )}
 
-      {/* Power Consumption */}
-      {device.capabilities.supports_power && device.state.power !== undefined && (
+      {/* Energy Meter (3-phase) */}
+      {device.capabilities.supports_energy_meter && (
+        <div className="mb-3 space-y-1">
+          {device.state.total_power !== undefined && device.state.total_power !== 0 && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                <Zap size={14} className="text-yellow-400" />
+                Gesamtleistung
+              </span>
+              <span className="text-sm font-medium text-white">{device.state.total_power.toFixed(1)} W</span>
+            </div>
+          )}
+          {[
+            { label: 'Phase A', power: device.state.power_a, voltage: device.state.voltage_a, current: device.state.current_a },
+            { label: 'Phase B', power: device.state.power_b, voltage: device.state.voltage_b, current: device.state.current_b },
+            { label: 'Phase C', power: device.state.power_c, voltage: device.state.voltage_c, current: device.state.current_c },
+          ].map((phase) => (
+            (phase.power !== undefined && phase.power !== 0) || (phase.voltage !== undefined && phase.voltage !== 0) ? (
+              <div key={phase.label} className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">{phase.label}</span>
+                <span className="text-gray-300">
+                  {phase.voltage?.toFixed(0) ?? '-'} V / {phase.current?.toFixed(2) ?? '-'} A / {phase.power?.toFixed(1) ?? '-'} W
+                </span>
+              </div>
+            ) : null
+          ))}
+          {device.state.total_energy !== undefined && device.state.total_energy > 0 && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">Energie</span>
+              <span className="text-gray-300">{(device.state.total_energy / 1000).toFixed(2)} kWh</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Power Consumption (single-phase) */}
+      {device.capabilities.supports_power && !device.capabilities.supports_energy_meter && device.state.power !== undefined && (
         <div className="flex items-center gap-1 text-xs text-gray-400 mt-2 pt-2 border-t border-gray-700">
           <Zap size={12} className="text-yellow-400" />
           <span>{device.state.power.toFixed(1)} W</span>
+          {device.state.voltage !== undefined && device.state.voltage > 0 && (
+            <span className="ml-2">{device.state.voltage.toFixed(0)} V</span>
+          )}
+          {device.state.current !== undefined && device.state.current > 0 && (
+            <span className="ml-2">{device.state.current.toFixed(2)} A</span>
+          )}
           {device.state.energy !== undefined && (
             <span className="ml-2">
               {(device.state.energy / 1000).toFixed(2)} kWh
@@ -223,6 +321,7 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
       <div className="mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
         <span className="text-[10px] text-gray-500 uppercase tracking-wide">
           Gen {device.generation} &middot; {device.type}
+          {device.capabilities.multi_channel && ` (${device.capabilities.channel_count}ch)`}
         </span>
         <span className="text-[10px] text-gray-500">{device.firmware_ver}</span>
       </div>
