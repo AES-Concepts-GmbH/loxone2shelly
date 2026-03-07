@@ -89,23 +89,23 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Mapping wirklich loeschen?')) return;
+    if (!confirm('Mapping wirklich löschen?')) return;
     try {
       await api.deleteMapping(id);
       setMappings((prev) => prev.filter((m) => m.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Loeschen');
+      setError(err instanceof Error ? err.message : 'Fehler beim Löschen');
     }
   };
 
   const handleBulkDelete = async () => {
-    if (!confirm(`${selectedIds.size} Mappings wirklich loeschen?`)) return;
+    if (!confirm(`${selectedIds.size} Mappings wirklich löschen?`)) return;
     try {
       await Promise.all([...selectedIds].map((id) => api.deleteMapping(id)));
       setMappings((prev) => prev.filter((m) => !selectedIds.has(m.id)));
       setSelectedIds(new Set());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Loeschen');
+      setError(err instanceof Error ? err.message : 'Fehler beim Löschen');
     }
   };
 
@@ -240,7 +240,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
             className="flex items-center gap-1 px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm transition-colors"
           >
             <Trash2 size={14} />
-            {selectedIds.size} loeschen
+            {selectedIds.size} löschen
           </button>
         )}
         <button
@@ -296,7 +296,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Shelly Geraet</label>
+              <label className="block text-xs text-gray-400 mb-1">Shelly Gerät</label>
               <select
                 value={editingMapping.shelly_id || ''}
                 onChange={(e) =>
@@ -304,7 +304,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                 }
                 className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
               >
-                <option value="">-- Waehlen --</option>
+                <option value="">-- Wählen --</option>
                 {devices.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name} ({d.ip})
@@ -440,7 +440,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                 </th>
                 <th className="pb-2 pr-4">Name</th>
                 <th className="pb-2 pr-4">Loxone ID</th>
-                <th className="pb-2 pr-4">Shelly Geraet</th>
+                <th className="pb-2 pr-4">Shelly Gerät</th>
                 <th className="pb-2 pr-4">Typ</th>
                 <th className="pb-2 pr-4">Status</th>
                 <th className="pb-2 pr-4">Feedback</th>

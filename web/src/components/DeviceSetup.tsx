@@ -29,7 +29,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
       await api.addShelly({ id: '', name: name || ip, ip, generation });
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Hinzufuegen');
+      setError(err instanceof Error ? err.message : 'Fehler beim Hinzufügen');
     } finally {
       setAdding(false);
     }
@@ -42,7 +42,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
       const devices = await api.discoverShelly();
       setDiscoveredDevices(devices);
       if (devices.length === 0) {
-        setError('Keine Shelly Geraete im Netzwerk gefunden.');
+        setError('Keine Shelly Geräte im Netzwerk gefunden.');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Discovery fehlgeschlagen');
@@ -56,7 +56,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
       await api.addShelly(device);
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Hinzufuegen');
+      setError(err instanceof Error ? err.message : 'Fehler beim Hinzufügen');
     }
   };
 
@@ -70,13 +70,13 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
           </div>
           <h1 className="text-2xl font-bold text-white">Loxone2Shelly</h1>
           <p className="text-gray-400 mt-2">
-            Shelly Geraet hinzufuegen, um die Bridge einzurichten.
+            Shelly Gerät hinzufügen, um die Bridge einzurichten.
           </p>
         </div>
 
         {/* Setup Card */}
         <div className="bg-gray-800 rounded-xl p-6 shadow-lg">
-          <h2 className="text-lg font-semibold text-white mb-4">Shelly Geraet hinzufuegen</h2>
+          <h2 className="text-lg font-semibold text-white mb-4">Shelly Gerät hinzufügen</h2>
 
           {/* Manual Entry */}
           <div className="space-y-3">
@@ -146,7 +146,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
               ) : (
                 <Plus size={16} />
               )}
-              Geraet hinzufuegen
+              Gerät hinzufügen
             </button>
           </div>
 
@@ -174,7 +174,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
           {/* Discovered Devices */}
           {discoveredDevices.length > 0 && (
             <div className="mt-4 space-y-2">
-              <h3 className="text-sm font-semibold text-gray-300">Gefundene Geraete</h3>
+              <h3 className="text-sm font-semibold text-gray-300">Gefundene Geräte</h3>
               {discoveredDevices.map((device) => (
                 <div
                   key={device.id || device.ip}
@@ -190,7 +190,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
                     onClick={() => handleAddDiscovered(device)}
                     className="px-3 py-1.5 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-xs transition-colors"
                   >
-                    Hinzufuegen
+                    Hinzufügen
                   </button>
                 </div>
               ))}

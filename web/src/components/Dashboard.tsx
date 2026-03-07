@@ -34,8 +34,8 @@ interface Tab {
 }
 
 const tabs: Tab[] = [
-  { id: 'devices', label: 'Geraete', icon: Power },
-  { id: 'inputs', label: 'Eingaenge', icon: MousePointerClick },
+  { id: 'devices', label: 'Geräte', icon: Power },
+  { id: 'inputs', label: 'Eingänge', icon: MousePointerClick },
   { id: 'mappings', label: 'Mappings', icon: Link },
   { id: 'settings', label: 'Einstellungen', icon: Settings },
   { id: 'guide', label: 'Anleitung', icon: BookOpen },
@@ -75,7 +75,7 @@ export default function Dashboard({
               <div>
                 <h1 className="text-lg font-bold text-white">Loxone2Shelly</h1>
                 <p className="text-xs text-gray-400">
-                  {devices.length} Geraete &middot; {onlineCount} online
+                  {devices.length} Geräte &middot; {onlineCount} online
                 </p>
               </div>
             </div>

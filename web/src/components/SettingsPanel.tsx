@@ -137,7 +137,7 @@ export default function SettingsPanel() {
   };
 
   const handleRemoveShelly = async (id: string) => {
-    if (!confirm('Shelly Geraet wirklich entfernen?')) return;
+    if (!confirm('Shelly Gerät wirklich entfernen?')) return;
     try {
       await api.removeShelly(id);
       setShellyDevices((prev) => prev.filter((d) => d.id !== id));
@@ -165,14 +165,14 @@ export default function SettingsPanel() {
       setDiscovering(true);
       const discovered = await api.discoverShelly();
       if (discovered.length > 0) {
-        alert(`${discovered.length} Shelly Geraete gefunden!`);
+        alert(`${discovered.length} Shelly Geräte gefunden!`);
         setShellyDevices((prev) => {
           const existingIds = new Set(prev.map((d) => d.id));
           const newDevices = discovered.filter((d) => !existingIds.has(d.id));
           return [...prev, ...newDevices];
         });
       } else {
-        alert('Keine neuen Shelly Geraete gefunden.');
+        alert('Keine neuen Shelly Geräte gefunden.');
       }
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Discovery fehlgeschlagen');
@@ -205,7 +205,7 @@ export default function SettingsPanel() {
   };
 
   const handleRestoreBackup = async (id: string) => {
-    if (!confirm('Backup wirklich wiederherstellen? Aktuelle Konfiguration wird ueberschrieben.'))
+    if (!confirm('Backup wirklich wiederherstellen? Aktuelle Konfiguration wird überschrieben.'))
       return;
     try {
       await api.restoreBackup(id);
@@ -217,12 +217,12 @@ export default function SettingsPanel() {
   };
 
   const handleDeleteBackup = async (id: string) => {
-    if (!confirm('Backup wirklich loeschen?')) return;
+    if (!confirm('Backup wirklich löschen?')) return;
     try {
       await api.deleteBackup(id);
       setBackups((prev) => prev.filter((b) => b.id !== id));
     } catch (err) {
-      setConfigError(err instanceof Error ? err.message : 'Loeschen fehlgeschlagen');
+      setConfigError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen');
     }
   };
 
@@ -298,7 +298,7 @@ export default function SettingsPanel() {
 
   const sections = [
     { id: 'loxone', label: 'Loxone Miniserver', icon: Server },
-    { id: 'shelly', label: 'Shelly Geraete', icon: Wifi },
+    { id: 'shelly', label: 'Shelly Geräte', icon: Wifi },
     { id: 'backups', label: 'Backup & Restore', icon: HardDrive },
     { id: 'logs', label: 'Server Logs', icon: ScrollText },
   ];
@@ -381,7 +381,7 @@ export default function SettingsPanel() {
               className="flex items-center gap-1 px-3 py-1.5 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-xs transition-colors"
             >
               <Plus size={12} />
-              Hinzufuegen
+              Hinzufügen
             </button>
           </div>
 
@@ -497,7 +497,7 @@ export default function SettingsPanel() {
                   onClick={handleSaveMs}
                   className="px-4 py-2 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-sm transition-colors"
                 >
-                  {isCreatingMs ? 'Hinzufuegen' : 'Speichern'}
+                  {isCreatingMs ? 'Hinzufügen' : 'Speichern'}
                 </button>
                 <button
                   onClick={() => {
@@ -562,7 +562,7 @@ export default function SettingsPanel() {
       {activeSection === 'shelly' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-300">Shelly Geraete</h3>
+            <h3 className="text-sm font-semibold text-gray-300">Shelly Geräte</h3>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDiscover}
@@ -585,7 +585,7 @@ export default function SettingsPanel() {
                 className="flex items-center gap-1 px-3 py-1.5 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-xs transition-colors"
               >
                 <Plus size={12} />
-                Hinzufuegen
+                Hinzufügen
               </button>
             </div>
           </div>
@@ -593,7 +593,7 @@ export default function SettingsPanel() {
           {/* Shelly Edit Form */}
           {editingShelly && isCreatingShelly && (
             <div className="bg-gray-800 rounded-xl p-4 shadow-lg animate-fade-in">
-              <h4 className="text-sm font-semibold text-white mb-3">Neues Shelly Geraet</h4>
+              <h4 className="text-sm font-semibold text-white mb-3">Neues Shelly Gerät</h4>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Name</label>
@@ -637,7 +637,7 @@ export default function SettingsPanel() {
                   onClick={handleAddShelly}
                   className="px-4 py-2 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-sm transition-colors"
                 >
-                  Hinzufuegen
+                  Hinzufügen
                 </button>
                 <button
                   onClick={() => {
@@ -699,7 +699,7 @@ export default function SettingsPanel() {
 
           {shellyDevices.length === 0 && !editingShelly && (
             <div className="text-center py-8 text-gray-400 text-sm">
-              Keine Shelly Geraete konfiguriert.
+              Keine Shelly Geräte konfiguriert.
             </div>
           )}
 
@@ -799,7 +799,7 @@ export default function SettingsPanel() {
                     <button
                       onClick={() => handleDeleteBackup(backup.id)}
                       className="p-1.5 hover:bg-red-500/20 rounded-lg transition-colors text-gray-400 hover:text-red-400"
-                      title="Loeschen"
+                      title="Löschen"
                     >
                       <Trash2 size={14} />
                     </button>

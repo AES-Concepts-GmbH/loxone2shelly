@@ -52,8 +52,8 @@ export default function InputList({ inputs, loading }: InputListProps) {
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h2 className="text-lg font-semibold text-white">Shelly Eingaenge</h2>
-          <p className="text-sm text-gray-400">{inputs.length} Eingaenge</p>
+          <h2 className="text-lg font-semibold text-white">Shelly Eingänge</h2>
+          <p className="text-sm text-gray-400">{inputs.length} Eingänge</p>
         </div>
       </div>
 
@@ -72,11 +72,11 @@ export default function InputList({ inputs, loading }: InputListProps) {
       {/* Input List */}
       {loading && inputs.length === 0 ? (
         <div className="flex items-center justify-center py-12">
-          <span className="text-gray-400">Lade Eingaenge...</span>
+          <span className="text-gray-400">Lade Eingänge...</span>
         </div>
       ) : filteredInputs.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
-          {search ? 'Keine Eingaenge gefunden.' : 'Keine Eingaenge vorhanden.'}
+          {search ? 'Keine Eingänge gefunden.' : 'Keine Eingänge vorhanden.'}
         </div>
       ) : (
         <div className="space-y-2">
@@ -92,7 +92,7 @@ export default function InputList({ inputs, loading }: InputListProps) {
                 <div>
                   <h3 className="font-semibold text-white text-sm">{input.name}</h3>
                   <p className="text-xs text-gray-400">
-                    ID: {input.id} &middot; Geraet: {input.device_id}
+                    ID: {input.id} &middot; Gerät: {input.device_id}
                   </p>
                 </div>
               </div>
