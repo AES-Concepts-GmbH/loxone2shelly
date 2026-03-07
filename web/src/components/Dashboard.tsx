@@ -6,7 +6,6 @@ import {
   MousePointerClick,
   Link,
   Settings,
-  RefreshCw,
 } from 'lucide-react';
 import type { Device, DeviceCommand, Input } from '../types';
 import DeviceList from './DeviceList';

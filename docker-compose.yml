@@ -3,7 +3,6 @@ services:
     build: .
     container_name: loxone2shelly
     restart: unless-stopped
-    network_mode: host
     ports:
       - "8080:8080"
     volumes:

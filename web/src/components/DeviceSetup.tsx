@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Wifi, Plus, CheckCircle, XCircle, Loader2, Search } from 'lucide-react';
+// CheckCircle and XCircle used in testResult display below
 import * as api from '../services/api';
 import type { ShellyDeviceConfig } from '../types';
 
@@ -11,38 +12,14 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
   const [name, setName] = useState('');
   const [ip, setIp] = useState('');
   const [generation, setGeneration] = useState(2);
-  const [testing, setTesting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [discovering, setDiscovering] = useState(false);
-  const [testResult, setTestResult] = useState<{
+  const [testResult] = useState<{
     success: boolean;
     message: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [discoveredDevices, setDiscoveredDevices] = useState<ShellyDeviceConfig[]>([]);
-
-  const handleTest = async () => {
-    if (!ip) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      // We add temporarily and test
-      const device = await api.addShelly({ id: '', name: name || ip, ip, generation });
-      const result = await api.testShellyConnection(device.id);
-      setTestResult(result);
-      // Clean up if test only
-      if (!result.success) {
-        await api.removeShelly(device.id);
-      }
-    } catch (err) {
-      setTestResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Test fehlgeschlagen',
-      });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const handleAdd = async () => {
     if (!ip) return;

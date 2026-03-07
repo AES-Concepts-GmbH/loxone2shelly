@@ -44,7 +44,7 @@ export async function getDevice(id: string): Promise<Device> {
 }
 
 export async function setDevice(id: string, cmd: DeviceCommand): Promise<Device> {
-  return request(`/devices/${id}/state`, {
+  return request(`/devices/${id}`, {
     method: 'PUT',
     body: JSON.stringify(cmd),
   });
@@ -159,7 +159,7 @@ export async function testUDP(data: {
   miniserver_id: string;
   command: string;
 }): Promise<{ success: boolean; message: string }> {
-  return request('/test/udp', {
+  return request('/udp/test', {
     method: 'POST',
     body: JSON.stringify(data),
   });
@@ -171,14 +171,14 @@ export async function discoverShelly(): Promise<ShellyDeviceConfig[]> {
 }
 
 export async function addShelly(data: ShellyDeviceConfig): Promise<ShellyDeviceConfig> {
-  return request('/shelly/devices', {
+  return request('/shelly/add', {
     method: 'POST',
     body: JSON.stringify(data),
   });
 }
 
 export async function removeShelly(id: string): Promise<void> {
-  return request(`/shelly/devices/${id}`, {
+  return request(`/shelly/${id}`, {
     method: 'DELETE',
   });
 }
@@ -188,5 +188,7 @@ export async function testShellyConnection(id: string): Promise<{
   message: string;
   device?: Device;
 }> {
-  return request(`/shelly/devices/${id}/test`);
+  return request(`/shelly/${id}/test`, {
+    method: 'POST',
+  });
 }

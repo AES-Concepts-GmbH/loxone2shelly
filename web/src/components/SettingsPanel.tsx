@@ -14,8 +14,6 @@ import {
   Shield,
   HardDrive,
   ScrollText,
-  ChevronDown,
-  ChevronRight,
   CheckCircle,
   XCircle,
   Eye,
