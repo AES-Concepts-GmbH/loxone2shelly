@@ -81,7 +81,15 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
           <div>
             <h3 className="font-semibold text-white text-sm">{device.name}</h3>
             <p className="text-xs text-gray-400">
-              {device.model} &middot; {device.ip}
+              {device.model} &middot;{' '}
+              <a
+                href={`http://${device.ip}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-shelly-blue hover:underline"
+              >
+                {device.ip}
+              </a>
             </p>
           </div>
         </div>

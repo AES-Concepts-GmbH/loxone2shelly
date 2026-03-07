@@ -16,12 +16,13 @@ import (
 
 // Client is the Shelly Gen1/Gen2+ HTTP/RPC client
 type Client struct {
-	devices    map[string]*DeviceInfo // key = config ID
-	mu         sync.RWMutex
-	httpClient *http.Client
-	eventChan  chan Event
-	stopChan   chan struct{}
-	lastStates map[string]interface{}
+	devices      map[string]*DeviceInfo // key = config ID
+	mu           sync.RWMutex
+	httpClient   *http.Client
+	eventChan    chan Event
+	stopChan     chan struct{}
+	lastStates   map[string]interface{}
+	offlineState map[string]bool // tracks known-offline devices to reduce log noise
 }
 
 // DeviceInfo holds configuration for a single Shelly device
@@ -44,11 +45,12 @@ func NewClient() *Client {
 	return &Client{
 		devices: make(map[string]*DeviceInfo),
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: 10 * time.Second,
 		},
-		eventChan:  make(chan Event, 100),
-		stopChan:   make(chan struct{}),
-		lastStates: make(map[string]interface{}),
+		eventChan:    make(chan Event, 100),
+		stopChan:     make(chan struct{}),
+		lastStates:   make(map[string]interface{}),
+		offlineState: make(map[string]bool),
 	}
 }
 
@@ -271,9 +273,27 @@ func (c *Client) queryDeviceGen2(d *DeviceInfo, device *models.Device) {
 	// Get device info
 	info, err := c.rpcGet(d.IP, "Shelly.GetDeviceInfo")
 	if err != nil {
-		log.Warn().Err(err).Str("id", d.ConfigID).Msg("Failed to get device info (Gen2)")
+		c.mu.Lock()
+		wasOffline := c.offlineState[d.ConfigID]
+		c.offlineState[d.ConfigID] = true
+		c.mu.Unlock()
+		if !wasOffline {
+			log.Warn().Err(err).Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device unreachable (Gen2)")
+		} else {
+			log.Debug().Str("id", d.ConfigID).Msg("Device still unreachable (Gen2)")
+		}
 		return
 	}
+
+	// Mark as back online if it was offline
+	c.mu.Lock()
+	wasOffline := c.offlineState[d.ConfigID]
+	c.offlineState[d.ConfigID] = false
+	c.mu.Unlock()
+	if wasOffline {
+		log.Info().Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device back online (Gen2)")
+	}
+
 	device.Online = true
 
 	if model, ok := info["model"].(string); ok {
@@ -299,9 +319,26 @@ func (c *Client) queryDeviceGen2(d *DeviceInfo, device *models.Device) {
 func (c *Client) queryDeviceGen1(d *DeviceInfo, device *models.Device) {
 	status, err := c.gen1Get(d.IP, "status")
 	if err != nil {
-		log.Warn().Err(err).Str("id", d.ConfigID).Msg("Failed to get device status (Gen1)")
+		c.mu.Lock()
+		wasOffline := c.offlineState[d.ConfigID]
+		c.offlineState[d.ConfigID] = true
+		c.mu.Unlock()
+		if !wasOffline {
+			log.Warn().Err(err).Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device unreachable (Gen1)")
+		} else {
+			log.Debug().Str("id", d.ConfigID).Msg("Device still unreachable (Gen1)")
+		}
 		return
 	}
+
+	c.mu.Lock()
+	wasOffline := c.offlineState[d.ConfigID]
+	c.offlineState[d.ConfigID] = false
+	c.mu.Unlock()
+	if wasOffline {
+		log.Info().Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device back online (Gen1)")
+	}
+
 	device.Online = true
 
 	// Try to determine device type from status
@@ -896,7 +933,7 @@ func (c *Client) queryInputs(d *DeviceInfo) []*models.Input {
 	if d.Generation >= 2 {
 		status, err := c.rpcGet(d.IP, "Shelly.GetStatus")
 		if err != nil {
-			log.Warn().Err(err).Str("id", d.ConfigID).Msg("Failed to get inputs (Gen2)")
+			log.Debug().Str("id", d.ConfigID).Msg("Failed to get inputs (Gen2)")
 			return inputs
 		}
 
@@ -924,7 +961,7 @@ func (c *Client) queryInputs(d *DeviceInfo) []*models.Input {
 		// Gen1: query /status and look for inputs
 		status, err := c.gen1Get(d.IP, "status")
 		if err != nil {
-			log.Warn().Err(err).Str("id", d.ConfigID).Msg("Failed to get inputs (Gen1)")
+			log.Debug().Str("id", d.ConfigID).Msg("Failed to get inputs (Gen1)")
 			return inputs
 		}
 
