@@ -37,14 +37,16 @@ func NewServer(shellyClient *shelly.Client, mappingManager *loxone.MappingManage
 		mqttSender:     mqttSender,
 	}
 
+	s.wsHub = NewWebSocketHub(shellyClient, mappingManager, udpSender, httpSender, mqttSender)
+
 	s.handlers = &Handlers{
 		shellyClient:   shellyClient,
 		mappingManager: mappingManager,
 		udpSender:      udpSender,
 		httpSender:     httpSender,
+		mqttSender:     mqttSender,
+		wsHub:          s.wsHub,
 	}
-
-	s.wsHub = NewWebSocketHub(shellyClient, mappingManager, udpSender, httpSender, mqttSender)
 
 	s.router = mux.NewRouter()
 	s.setupRoutes()
@@ -100,6 +102,9 @@ func (s *Server) setupRoutes() {
 
 	// Logs
 	api.HandleFunc("/logs", s.handlers.GetLogs).Methods("GET", "OPTIONS")
+
+	// Webhook (Shelly Action-URLs)
+	api.HandleFunc("/webhook", s.handlers.Webhook).Methods("GET", "OPTIONS")
 
 	// Shelly management
 	api.HandleFunc("/shelly/discover", s.handlers.DiscoverShelly).Methods("GET", "OPTIONS")

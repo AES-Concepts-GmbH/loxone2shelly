@@ -24,6 +24,8 @@ type Handlers struct {
 	mappingManager *loxone.MappingManager
 	udpSender      *loxone.UDPSender
 	httpSender     *loxone.HTTPSender
+	mqttSender     *loxone.MQTTSender
+	wsHub          *WebSocketHub
 }
 
 // jsonResponse writes a JSON response
