@@ -113,6 +113,7 @@ export interface ShellyDeviceConfig {
   name: string;
   ip: string;
   generation: number;
+  mqtt_id?: string;
 }
 
 export interface MiniserverConfig {

@@ -597,7 +597,7 @@ export default function SettingsPanel() {
           {editingShelly && isCreatingShelly && (
             <div className="bg-gray-800 rounded-xl p-4 shadow-lg animate-fade-in">
               <h4 className="text-sm font-semibold text-white mb-3">Neues Shelly Gerät</h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Name</label>
                   <input
@@ -634,6 +634,16 @@ export default function SettingsPanel() {
                     <option value={2}>Gen 2+</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">MQTT ID</label>
+                  <input
+                    type="text"
+                    value={editingShelly.mqtt_id || ''}
+                    onChange={(e) => setEditingShelly({ ...editingShelly, mqtt_id: e.target.value })}
+                    className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                    placeholder="z.B. shelly1pmg4-e4b06379f368"
+                  />
+                </div>
               </div>
               <div className="flex items-center gap-2 mt-4">
                 <button
@@ -667,6 +677,7 @@ export default function SettingsPanel() {
                     <h4 className="font-semibold text-white text-sm">{device.name}</h4>
                     <p className="text-xs text-gray-400">
                       {device.ip} &middot; Gen {device.generation}
+                      {device.mqtt_id && <> &middot; MQTT: {device.mqtt_id}</>}
                     </p>
                   </div>
                 </div>

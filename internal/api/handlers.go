@@ -118,6 +118,7 @@ type AddShellyRequest struct {
 	Name       string `json:"name"`
 	IP         string `json:"ip"`
 	Generation int    `json:"generation"`
+	MQTTID     string `json:"mqtt_id"`
 }
 
 // AddShelly adds a new Shelly device to the configuration
@@ -152,6 +153,7 @@ func (h *Handlers) AddShelly(w http.ResponseWriter, r *http.Request) {
 		Name:       req.Name,
 		IP:         req.IP,
 		Generation: req.Generation,
+		MQTTID:     req.MQTTID,
 	})
 	config.UpdateShelly(cfg.Shelly)
 	if err := config.Save(); err != nil {
@@ -165,6 +167,7 @@ func (h *Handlers) AddShelly(w http.ResponseWriter, r *http.Request) {
 		"name":       req.Name,
 		"ip":         req.IP,
 		"generation": req.Generation,
+		"mqtt_id":    req.MQTTID,
 	})
 }
 
