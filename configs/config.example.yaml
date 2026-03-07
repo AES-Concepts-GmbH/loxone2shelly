@@ -1,0 +1,30 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+shelly:
+  poll_interval: 10
+  devices:
+    # - id: "shelly1"
+    #   name: "Büro Licht"
+    #   ip: "192.168.1.50"
+    #   generation: 2
+
+loxone:
+  miniservers:
+    # - id: "ms1"
+    #   name: "Miniserver 1"
+    #   ip: "192.168.1.10"
+    #   port: 7777
+    #   udp_enabled: true
+    #   http_enabled: false
+    #   http_url: ""
+    #   http_user: ""
+    #   http_password: ""
+    #   send_all: false
+
+logging:
+  level: "info"
+  format: "json"
+
+mappings: []
