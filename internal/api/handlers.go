@@ -294,9 +294,8 @@ func (h *Handlers) TestShellyConnection(w http.ResponseWriter, r *http.Request) 
 	resp, err := client.Get(testURL)
 	if err != nil {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"id":        id,
-			"reachable": false,
-			"error":     err.Error(),
+			"success": false,
+			"message": fmt.Sprintf("Gerät nicht erreichbar: %s", err.Error()),
 		})
 		return
 	}
@@ -307,10 +306,9 @@ func (h *Handlers) TestShellyConnection(w http.ResponseWriter, r *http.Request) 
 	json.Unmarshal(body, &info)
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"id":        id,
-		"reachable": true,
-		"status":    resp.StatusCode,
-		"info":      info,
+		"success": true,
+		"message": "Verbindung erfolgreich",
+		"device":  info,
 	})
 }
 
