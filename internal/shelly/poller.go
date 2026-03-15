@@ -88,6 +88,8 @@ func stateToMap(device interface{}) interface{} {
 		return nil
 	}
 	var result interface{}
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil
+	}
 	return result
 }

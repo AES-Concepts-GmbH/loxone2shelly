@@ -15,30 +15,35 @@ import (
 
 // httpTarget represents a single HTTP connection to a Miniserver
 type httpTarget struct {
-	baseURL  string
-	user     string
-	password string
-	sendAll  bool
-	name     string
+	baseURL     string
+	user        string
+	password    string
+	sendAll     bool
+	name        string
+	insecureTLS bool
+	client      *http.Client
 }
 
 // HTTPSender sends status updates to one or more Loxone Miniservers via HTTP
 type HTTPSender struct {
 	targets map[string]*httpTarget // key = MiniserverConfig.ID
-	client  *http.Client
 	mu      sync.Mutex
+}
+
+// newHTTPClient creates an HTTP client with optional TLS certificate verification.
+func newHTTPClient(insecureTLS bool) *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecureTLS}, //nolint:gosec // controlled by explicit user config
+		},
+	}
 }
 
 // NewHTTPSender creates a new HTTP sender
 func NewHTTPSender() *HTTPSender {
 	return &HTTPSender{
 		targets: make(map[string]*httpTarget),
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		},
 	}
 }
 
@@ -64,14 +69,16 @@ func (s *HTTPSender) Configure(miniservers []config.MiniserverConfig) {
 		}
 
 		s.targets[ms.ID] = &httpTarget{
-			baseURL:  baseURL,
-			user:     ms.HTTPUser,
-			password: ms.HTTPPassword,
-			sendAll:  ms.SendAll,
-			name:     ms.Name,
+			baseURL:     baseURL,
+			user:        ms.HTTPUser,
+			password:    ms.HTTPPassword,
+			sendAll:     ms.SendAll,
+			name:        ms.Name,
+			insecureTLS: ms.HTTPInsecureTLS,
+			client:      newHTTPClient(ms.HTTPInsecureTLS),
 		}
 
-		log.Info().Str("id", ms.ID).Str("name", ms.Name).Str("url", baseURL).Msg("HTTP feedback configured for miniserver")
+		log.Info().Str("id", ms.ID).Str("name", ms.Name).Str("url", baseURL).Bool("insecure_tls", ms.HTTPInsecureTLS).Msg("HTTP feedback configured for miniserver")
 	}
 }
 
@@ -141,7 +148,7 @@ func (s *HTTPSender) sendHTTP(t *httpTarget, loxoneID, property string, value in
 		req.SetBasicAuth(t.user, t.password)
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := t.client.Do(req)
 	if err != nil {
 		log.Warn().Err(err).Str("miniserver", t.name).Str("url", reqURL).Msg("Failed to send HTTP feedback")
 		return

@@ -61,6 +61,7 @@ type MiniserverConfig struct {
 	HTTPURL         string `yaml:"http_url" json:"http_url"`
 	HTTPUser        string `yaml:"http_user" json:"http_user"`
 	HTTPPassword    string `yaml:"http_password" json:"http_password"`
+	HTTPInsecureTLS bool   `yaml:"http_insecure_tls" json:"http_insecure_tls"` // skip TLS certificate verification (for self-signed certs)
 	MQTTEnabled     bool   `yaml:"mqtt_enabled" json:"mqtt_enabled"`
 	MQTTTopicPrefix string `yaml:"mqtt_topic_prefix" json:"mqtt_topic_prefix"` // e.g. "loxone2shelly"; topic: <prefix>/<loxone_id>/<property>
 	SendAll         bool   `yaml:"send_all" json:"send_all"`
