@@ -66,9 +66,11 @@ npm run dev
 Qualitätssicherung lokal:
 
 ```bash
-gofmt -l . && go vet ./cmd/... ./internal/... && go test -race ./cmd/... ./internal/...
-cd web && npm run lint && npm run typecheck && npm test && npm run build
+gofmt -l . && go vet ./cmd/... ./internal/... && go test -race -cover ./cmd/... ./internal/...
+cd web && npm run lint && npm run typecheck && npm run test:coverage && npm run build
 ```
+
+Die CI erzwingt eine Mindestabdeckung von 85 % (Go, Statements) und 90 % (Frontend, Statements und Zeilen).
 
 ## Konfiguration
 
