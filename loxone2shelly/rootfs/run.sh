@@ -1,15 +1,22 @@
 #!/usr/bin/with-contenv bashio
+# shellcheck shell=bash
+set -e
 
-CONFIG_DIR="/config/loxone2shelly"
+# /config is the add-on's private config directory (map: addon_config).
+CONFIG_DIR="/config"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
-# Create config directory if not exists
 mkdir -p "${CONFIG_DIR}"
 
-# Read add-on options
 LOG_LEVEL=$(bashio::config 'log_level' 'info')
+API_TOKEN=$(bashio::config 'api_token' '')
 
-# Create config file if it doesn't exist
+# Migrate from the old location used by earlier versions.
+if [ ! -f "${CONFIG_FILE}" ] && [ -f "/config/loxone2shelly/config.yaml" ]; then
+    bashio::log.info "Migrating configuration from /config/loxone2shelly/config.yaml"
+    mv /config/loxone2shelly/config.yaml "${CONFIG_FILE}"
+fi
+
 if [ ! -f "${CONFIG_FILE}" ]; then
     bashio::log.info "Creating initial configuration..."
     cat > "${CONFIG_FILE}" << EOF
@@ -24,22 +31,32 @@ shelly:
 loxone:
   miniservers: []
 
+mqtt:
+  enabled: false
+  broker: "tcp://core-mosquitto:1883"
+  client_id: "loxone2shelly"
+  topic_prefix: "shellies"
+
 logging:
   level: "${LOG_LEVEL}"
   format: "json"
 
 mappings: []
 EOF
+    chmod 600 "${CONFIG_FILE}"
 fi
 
-# Update log level from add-on options
+# Keep the log level in sync with the add-on option (only the logging section).
 if [ -n "${LOG_LEVEL}" ]; then
-    sed -i "s/level: .*/level: \"${LOG_LEVEL}\"/" "${CONFIG_FILE}" 2>/dev/null || true
+    sed -i -E '/^logging:/,/^[^ ]/ s/^(  level: ).*/\1"'"${LOG_LEVEL}"'"/' "${CONFIG_FILE}" 2>/dev/null || true
 fi
 
 bashio::log.info "Starting Loxone2Shelly Gateway..."
 bashio::log.info "Config: ${CONFIG_FILE}"
 bashio::log.info "Log Level: ${LOG_LEVEL}"
+if [ -n "${API_TOKEN}" ]; then
+    export L2S_API_TOKEN="${API_TOKEN}"
+    bashio::log.info "API token: set via add-on option"
+fi
 
-# Start the gateway
 exec /app/gateway -config "${CONFIG_FILE}"

@@ -1,64 +1,53 @@
-# Build stage for Go backend
-FROM golang:1.24-alpine AS go-builder
+# syntax=docker/dockerfile:1
 
+# ---- Go backend ----
+FROM golang:1.24-alpine AS go-builder
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache git
+# Dependencies first for layer caching
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Copy source code first
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
+COPY VERSION ./VERSION
 
-# Download dependencies and build
-RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gateway ./cmd/gateway
+RUN VERSION=$(tr -d '[:space:]' < VERSION) && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o gateway ./cmd/gateway
 
-# Build stage for React frontend
+# ---- React frontend ----
 FROM node:20-alpine AS web-builder
-
 WORKDIR /app/web
 
-# Copy package files and install dependencies
-COPY web/package.json ./
-RUN npm install
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
-# Copy source code
 COPY web/ ./
-
-# Copy VERSION file for build-time injection
 COPY VERSION /tmp/VERSION
 
-# Build the frontend with version info
-RUN export VITE_APP_VERSION=$(cat /tmp/VERSION | tr -d '[:space:]') && \
+RUN export VITE_APP_VERSION=$(tr -d '[:space:]' < /tmp/VERSION) && \
     export VITE_BUILD_DATE=$(date -u +%Y-%m-%d) && \
     npm run build
 
-# Final stage
-FROM alpine:3.19
-
+# ---- Runtime ----
+FROM alpine:3.20
 WORKDIR /app
 
-# Install ca-certificates for HTTPS requests
 RUN apk --no-cache add ca-certificates tzdata
 
-# Copy binary from go-builder
 COPY --from=go-builder /app/gateway .
-
-# Copy frontend build from web-builder
 COPY --from=web-builder /app/web/dist ./web/dist
-
-# Copy example config
 COPY configs/config.example.yaml ./config.example.yaml
 
-# Create config directory
+# Config (and backups) live in /app/configs; mount a volume there.
 RUN mkdir -p /app/configs
 
-# Expose port
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
 
-# Run the binary
 ENTRYPOINT ["./gateway"]
 CMD ["-config", "/app/configs/config.yaml"]

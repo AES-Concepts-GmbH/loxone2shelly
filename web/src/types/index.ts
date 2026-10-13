@@ -1,7 +1,7 @@
 export interface Device {
   id: string;
   name: string;
-  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor", "meter"
+  type: string; // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor", "meter", "input"
   model: string;
   ip: string;
   generation: number;
@@ -86,6 +86,7 @@ export interface Input {
   id: string;
   name: string;
   device_id: string;
+  channel: number;
   state: InputState;
 }
 
@@ -104,8 +105,11 @@ export interface Mapping {
   enabled: boolean;
   feedback_udp?: boolean;
   feedback_http?: boolean;
+  feedback_mqtt?: boolean;
   description?: string;
   miniserver_id?: string;
+  /** Channel of a multi-channel device; undefined/null = whole device */
+  channel?: number | null;
 }
 
 export interface ShellyDeviceConfig {
@@ -114,6 +118,17 @@ export interface ShellyDeviceConfig {
   ip: string;
   generation: number;
   mqtt_id?: string;
+  username?: string;
+  /** Masked ("********") when read from the server */
+  password?: string;
+}
+
+export interface DiscoveredDevice {
+  id: string;
+  ip: string;
+  name: string;
+  gen: number;
+  model?: string;
 }
 
 export interface MiniserverConfig {
@@ -126,6 +141,9 @@ export interface MiniserverConfig {
   http_url: string;
   http_user: string;
   http_password: string;
+  http_insecure_tls: boolean;
+  mqtt_enabled: boolean;
+  mqtt_topic_prefix: string;
   send_all: boolean;
 }
 
@@ -147,17 +165,43 @@ export interface MQTTConfig {
   topic_prefix: string;
 }
 
+export interface ServerConfig {
+  port: number;
+  host: string;
+  api_token: string;
+  webhook_token: string;
+  cors_origins: string[] | null;
+  backup_dir: string;
+}
+
 export interface ConfigResponse {
-  server: { port: number; host: string };
+  server: ServerConfig;
   shelly: ShellyConfig;
   loxone: LoxoneConfig;
   mqtt: MQTTConfig;
   logging: { level: string; format: string };
 }
 
+export interface HealthResponse {
+  status: string;
+  version: string;
+  timestamp: string;
+  shelly_configured: boolean;
+  auth_required: boolean;
+  webhook_token_required?: boolean;
+  mqtt_connected?: boolean;
+}
+
 export interface WSMessage {
   type: string;
   payload: unknown;
+}
+
+export interface DeviceUpdatePayload {
+  device_id: string;
+  type: string;
+  channel?: number;
+  state: Partial<DeviceState> & Record<string, unknown>;
 }
 
 export interface LogEntry {
@@ -168,16 +212,13 @@ export interface LogEntry {
   fields?: Record<string, unknown>;
 }
 
-export interface ConfigBackup {
+export interface BackupMeta {
   id: string;
-  version: string;
+  filename: string;
   created_at: string;
-  remark: string;
-  config: {
-    shelly?: ShellyConfig;
-    loxone?: LoxoneConfig;
-    mappings?: Mapping[];
-  };
+  size: number;
+  version?: string;
+  remark?: string;
 }
 
 export interface WebhookEvent {

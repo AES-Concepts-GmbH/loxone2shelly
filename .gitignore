@@ -28,3 +28,12 @@ coverage/
 
 # Docker images
 *.tar
+
+# Backups created by the gateway (next to the config file)
+configs/backups/
+
+# Home Assistant add-on build artefacts
+loxone2shelly/src/
+
+# Test output
+web/coverage/

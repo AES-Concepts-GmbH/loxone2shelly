@@ -16,6 +16,7 @@ import {
   Gauge,
 } from 'lucide-react';
 import type { Device, DeviceCommand } from '../types';
+import RangeControl from './RangeControl';
 
 interface DeviceCardProps {
   device: Device;
@@ -102,7 +103,7 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
 
   const handleToggle = (channel?: number) => {
     if (channel !== undefined) {
-      const ch = device.channels?.[channel];
+      const ch = device.channels?.find((c) => c.index === channel);
       if (ch) {
         onCommand(device.id, { on: !ch.on, channel });
       }
@@ -194,7 +195,7 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
                 )}
               </span>
               <button
-                onClick={() => handleToggle(idx)}
+                onClick={() => handleToggle(ch.index)}
                 disabled={!device.online}
                 className={`transition-colors ${
                   !device.online ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
@@ -242,14 +243,10 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
               {device.state.brightness ?? 0}%
             </span>
           </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
+          <RangeControl
             value={device.state.brightness ?? 0}
-            onChange={(e) => handleBrightness(parseInt(e.target.value))}
+            onCommit={handleBrightness}
             disabled={!device.online}
-            className="w-full"
           />
         </div>
       )}
@@ -263,14 +260,10 @@ export default function DeviceCard({ device, onCommand }: DeviceCardProps) {
               {device.state.position ?? 0}%
             </span>
           </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
+          <RangeControl
             value={device.state.position ?? 0}
-            onChange={(e) => handlePosition(parseInt(e.target.value))}
+            onCommit={handlePosition}
             disabled={!device.online}
-            className="w-full"
           />
         </div>
       )}

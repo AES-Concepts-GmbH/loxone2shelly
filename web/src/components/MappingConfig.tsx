@@ -26,6 +26,8 @@ const SHELLY_TYPES = [
   { value: 'input', label: 'Input' },
   { value: 'rgb', label: 'RGB' },
   { value: 'rgbw', label: 'RGBW' },
+  { value: 'sensor', label: 'Sensor' },
+  { value: 'meter', label: 'Energiezähler' },
 ];
 
 const emptyMapping: Omit<Mapping, 'id'> = {
@@ -34,10 +36,12 @@ const emptyMapping: Omit<Mapping, 'id'> = {
   shelly_id: '',
   shelly_type: 'switch',
   enabled: true,
-  feedback_udp: false,
-  feedback_http: false,
+  feedback_udp: true,
+  feedback_http: true,
+  feedback_mqtt: true,
   description: '',
   miniserver_id: '',
+  channel: null,
 };
 
 export default function MappingConfig({ devices }: MappingConfigProps) {
@@ -135,7 +139,8 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
         const text = await file.text();
         const data = JSON.parse(text);
         const result = await api.importMappings(data);
-        alert(`${result.imported} Mappings importiert`);
+        setError(null);
+        alert(`${result.imported} Mappings importiert (${result.added} neu, ${result.replaced} ersetzt)`);
         loadMappings();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Import fehlgeschlagen');
@@ -340,6 +345,29 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                 placeholder="Optional"
               />
             </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Kanal (Mehrkanalgeräte)</label>
+              <select
+                value={editingMapping.channel === null || editingMapping.channel === undefined ? '' : String(editingMapping.channel)}
+                onChange={(e) =>
+                  setEditingMapping((prev) => ({
+                    ...prev,
+                    channel: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                  }))
+                }
+                className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+              >
+                <option value="">Ganzes Gerät / Kanal 0</option>
+                {Array.from(
+                  { length: devices.find((d) => d.id === editingMapping.shelly_id)?.channels?.length || 4 },
+                  (_, i) => i
+                ).map((i) => (
+                  <option key={i} value={i}>
+                    Kanal {i}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="flex items-center gap-6 mt-3">
@@ -360,7 +388,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
               <div className="toggle-switch">
                 <input
                   type="checkbox"
-                  checked={editingMapping.feedback_udp ?? false}
+                  checked={editingMapping.feedback_udp ?? true}
                   onChange={(e) =>
                     setEditingMapping((prev) => ({
                       ...prev,
@@ -376,7 +404,7 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
               <div className="toggle-switch">
                 <input
                   type="checkbox"
-                  checked={editingMapping.feedback_http ?? false}
+                  checked={editingMapping.feedback_http ?? true}
                   onChange={(e) =>
                     setEditingMapping((prev) => ({
                       ...prev,
@@ -387,6 +415,22 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                 <span className="toggle-slider"></span>
               </div>
               HTTP Feedback
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <div className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={editingMapping.feedback_mqtt ?? true}
+                  onChange={(e) =>
+                    setEditingMapping((prev) => ({
+                      ...prev,
+                      feedback_mqtt: e.target.checked,
+                    }))
+                  }
+                />
+                <span className="toggle-slider"></span>
+              </div>
+              MQTT Feedback
             </label>
           </div>
 
@@ -478,6 +522,11 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                     <div className="flex items-center gap-1">
                       <Link size={12} className="text-shelly-blue" />
                       <span className="text-gray-300">{getDeviceName(mapping.shelly_id)}</span>
+                      {mapping.channel !== null && mapping.channel !== undefined && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">
+                          Kanal {mapping.channel}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="py-3 pr-4">
@@ -498,14 +547,19 @@ export default function MappingConfig({ devices }: MappingConfigProps) {
                   </td>
                   <td className="py-3 pr-4">
                     <div className="flex gap-1">
-                      {mapping.feedback_udp && (
+                      {(mapping.feedback_udp ?? true) && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">
                           UDP
                         </span>
                       )}
-                      {mapping.feedback_http && (
+                      {(mapping.feedback_http ?? true) && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-400">
                           HTTP
+                        </span>
+                      )}
+                      {(mapping.feedback_mqtt ?? true) && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">
+                          MQTT
                         </span>
                       )}
                     </div>

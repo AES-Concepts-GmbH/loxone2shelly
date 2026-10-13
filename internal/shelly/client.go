@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,15 +15,37 @@ import (
 	"github.com/sbeyeler/loxone2shelly/internal/models"
 )
 
-// Client is the Shelly Gen1/Gen2+ HTTP/RPC client
+const (
+	// deviceInfoTTL controls how often model/firmware information is refreshed.
+	deviceInfoTTL = 10 * time.Minute
+	// maxResponseBytes caps a single device response.
+	maxResponseBytes = 1 << 20
+)
+
+// Client is the Shelly Gen1/Gen2+ HTTP/RPC client. It keeps the last known
+// state of every device so API reads do not hit the devices.
 type Client struct {
-	devices      map[string]*DeviceInfo // key = config ID
 	mu           sync.RWMutex
+	devices      map[string]*DeviceInfo     // key = config ID
+	cache        map[string]*models.Device  // last known state per device
+	inputCache   map[string][]*models.Input // last known inputs per device
+	infoCache    map[string]cachedInfo      // Gen2 Shelly.GetDeviceInfo per device
+	lastStates   map[string]interface{}     // serialized device state for change detection
+	chanStates   map[string]interface{}     // serialized channel state, key "<id>:<channel>"
+	offlineState map[string]bool            // tracks known-offline devices to reduce log noise
 	httpClient   *http.Client
 	eventChan    chan Event
 	stopChan     chan struct{}
-	lastStates   map[string]interface{}
-	offlineState map[string]bool // tracks known-offline devices to reduce log noise
+	stopOnce     sync.Once
+	pollInterval time.Duration
+	pollReset    chan struct{}
+}
+
+type cachedInfo struct {
+	model    string
+	firmware string
+	app      string
+	fetched  time.Time
 }
 
 // DeviceInfo holds configuration for a single Shelly device
@@ -31,64 +54,136 @@ type DeviceInfo struct {
 	Name       string
 	IP         string
 	Generation int
+	Username   string
+	Password   string
+}
+
+// DeviceSpec is the configuration needed to register a device.
+type DeviceSpec struct {
+	ID         string
+	Name       string
+	IP         string
+	Generation int
+	Username   string
+	Password   string
 }
 
 // Event represents a state change event from a Shelly device
 type Event struct {
 	DeviceID string
-	Type     string      // "switch", "light", "input", etc
-	Data     interface{}
+	Type     string // "switch", "light", "roller", "sensor", "meter", "input", ...
+	// Channel is set for updates of a single channel of a multi-channel device.
+	Channel *int
+	// State is the payload forwarded to UI clients (models.DeviceState or a partial map).
+	State interface{}
+	// Device is the full device snapshot when known (poller / live refresh).
+	Device *models.Device
+	// Props, when set, are sent to Loxone as-is instead of being derived from Device.
+	Props []models.Prop
 }
 
 // NewClient creates a new Shelly client
 func NewClient() *Client {
 	return &Client{
-		devices: make(map[string]*DeviceInfo),
+		devices:      make(map[string]*DeviceInfo),
+		cache:        make(map[string]*models.Device),
+		inputCache:   make(map[string][]*models.Input),
+		infoCache:    make(map[string]cachedInfo),
+		lastStates:   make(map[string]interface{}),
+		chanStates:   make(map[string]interface{}),
+		offlineState: make(map[string]bool),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		eventChan:    make(chan Event, 100),
+		eventChan:    make(chan Event, 256),
 		stopChan:     make(chan struct{}),
-		lastStates:   make(map[string]interface{}),
-		offlineState: make(map[string]bool),
+		pollInterval: 10 * time.Second,
+		pollReset:    make(chan struct{}, 1),
 	}
 }
 
-// AddDevice adds a Shelly device to the client
-func (c *Client) AddDevice(id, name, ip string, gen int) {
+// AddDevice adds or replaces a Shelly device.
+func (c *Client) AddDevice(spec DeviceSpec) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.devices[id] = &DeviceInfo{
-		ConfigID:   id,
-		Name:       name,
-		IP:         ip,
-		Generation: gen,
+	c.devices[spec.ID] = &DeviceInfo{
+		ConfigID:   spec.ID,
+		Name:       spec.Name,
+		IP:         spec.IP,
+		Generation: spec.Generation,
+		Username:   spec.Username,
+		Password:   spec.Password,
 	}
-	log.Info().Str("id", id).Str("name", name).Str("ip", ip).Int("gen", gen).Msg("Shelly device added")
+	c.mu.Unlock()
+	log.Info().Str("id", spec.ID).Str("name", spec.Name).Str("ip", spec.IP).Int("gen", spec.Generation).Msg("Shelly device added")
 }
 
-// UpdateDevice updates name and IP of an existing Shelly device
-func (c *Client) UpdateDevice(id, name, ip string, gen int) bool {
+// UpdateDevice updates an existing Shelly device. Returns false if unknown.
+func (c *Client) UpdateDevice(spec DeviceSpec) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	dev, ok := c.devices[id]
+	dev, ok := c.devices[spec.ID]
 	if !ok {
+		c.mu.Unlock()
 		return false
 	}
-	dev.Name = name
-	dev.IP = ip
-	dev.Generation = gen
-	log.Info().Str("id", id).Str("name", name).Str("ip", ip).Int("gen", gen).Msg("Shelly device updated")
+	ipChanged := dev.IP != spec.IP || dev.Generation != spec.Generation
+	dev.Name = spec.Name
+	dev.IP = spec.IP
+	dev.Generation = spec.Generation
+	dev.Username = spec.Username
+	dev.Password = spec.Password
+	if ipChanged {
+		delete(c.infoCache, spec.ID)
+		delete(c.cache, spec.ID)
+		delete(c.inputCache, spec.ID)
+	}
+	c.mu.Unlock()
+	log.Info().Str("id", spec.ID).Str("name", spec.Name).Str("ip", spec.IP).Int("gen", spec.Generation).Msg("Shelly device updated")
 	return true
 }
 
 // RemoveDevice removes a Shelly device from the client
 func (c *Client) RemoveDevice(id string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	delete(c.devices, id)
+	delete(c.cache, id)
+	delete(c.inputCache, id)
+	delete(c.infoCache, id)
 	delete(c.lastStates, id)
+	delete(c.offlineState, id)
+	for key := range c.chanStates {
+		if strings.HasPrefix(key, id+":") {
+			delete(c.chanStates, key)
+		}
+	}
+	c.mu.Unlock()
 	log.Info().Str("id", id).Msg("Shelly device removed")
+}
+
+// SyncDevices makes the registered devices match specs: new devices are added,
+// changed ones updated and missing ones removed.
+func (c *Client) SyncDevices(specs []DeviceSpec) {
+	want := make(map[string]DeviceSpec, len(specs))
+	for _, s := range specs {
+		want[s.ID] = s
+	}
+
+	c.mu.RLock()
+	existing := make([]string, 0, len(c.devices))
+	for id := range c.devices {
+		existing = append(existing, id)
+	}
+	c.mu.RUnlock()
+
+	for _, id := range existing {
+		if _, ok := want[id]; !ok {
+			c.RemoveDevice(id)
+		}
+	}
+	for _, spec := range specs {
+		if !c.UpdateDevice(spec) {
+			c.AddDevice(spec)
+		}
+	}
 }
 
 // IsConfigured returns true if at least one device is configured
@@ -98,90 +193,175 @@ func (c *Client) IsConfigured() bool {
 	return len(c.devices) > 0
 }
 
-// GetDevices queries all configured Shelly devices in parallel and returns them as models.Device
-func (c *Client) GetDevices() []*models.Device {
+// HasDevice reports whether a device with the given ID is registered.
+func (c *Client) HasDevice(id string) bool {
 	c.mu.RLock()
-	devicesCopy := make([]*DeviceInfo, 0, len(c.devices))
+	defer c.mu.RUnlock()
+	_, ok := c.devices[id]
+	return ok
+}
+
+func (c *Client) deviceSnapshot(id string) (DeviceInfo, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	dev, ok := c.devices[id]
+	if !ok {
+		return DeviceInfo{}, false
+	}
+	return *dev, true
+}
+
+func (c *Client) deviceSnapshots() []DeviceInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	list := make([]DeviceInfo, 0, len(c.devices))
 	for _, d := range c.devices {
-		cp := *d
-		devicesCopy = append(devicesCopy, &cp)
+		list = append(list, *d)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ConfigID < list[j].ConfigID })
+	return list
+}
+
+// GetDevices returns the last known state of all devices. Devices that have
+// never been polled are queried live.
+func (c *Client) GetDevices() []*models.Device {
+	infos := c.deviceSnapshots()
+	result := make([]*models.Device, 0, len(infos))
+	var missing []DeviceInfo
+
+	c.mu.RLock()
+	for _, d := range infos {
+		if cached, ok := c.cache[d.ConfigID]; ok {
+			result = append(result, cloneDevice(cached))
+		} else {
+			missing = append(missing, d)
+		}
 	}
 	c.mu.RUnlock()
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	results := make([]*models.Device, 0, len(devicesCopy))
-
-	for _, dev := range devicesCopy {
-		wg.Add(1)
-		go func(d *DeviceInfo) {
-			defer wg.Done()
-			device := c.queryDevice(d)
-			mu.Lock()
-			results = append(results, device)
-			mu.Unlock()
-		}(dev)
+	if len(missing) > 0 {
+		result = append(result, c.refreshDevices(missing)...)
 	}
 
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result
+}
+
+// RefreshAll queries every device live, updates the cache and returns the result.
+func (c *Client) RefreshAll() []*models.Device {
+	return c.refreshDevices(c.deviceSnapshots())
+}
+
+func (c *Client) refreshDevices(infos []DeviceInfo) []*models.Device {
+	var wg sync.WaitGroup
+	results := make([]*models.Device, len(infos))
+	for i := range infos {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = c.refreshDevice(infos[i])
+		}(i)
+	}
 	wg.Wait()
 	return results
 }
 
-// GetDevice queries a single Shelly device by config ID
-func (c *Client) GetDevice(id string) (*models.Device, error) {
-	c.mu.RLock()
-	dev, ok := c.devices[id]
-	c.mu.RUnlock()
+// refreshDevice queries one device and stores the result in the cache.
+func (c *Client) refreshDevice(d DeviceInfo) *models.Device {
+	device, inputs := c.queryDevice(&d)
+	c.mu.Lock()
+	c.cache[d.ConfigID] = cloneDevice(device)
+	if device.Online {
+		c.inputCache[d.ConfigID] = inputs
+		c.seedBaselineLocked(device)
+	}
+	c.mu.Unlock()
+	return device
+}
 
+// GetDevice returns the last known state of a device by config ID.
+func (c *Client) GetDevice(id string) (*models.Device, error) {
+	d, ok := c.deviceSnapshot(id)
 	if !ok {
 		return nil, fmt.Errorf("device not found: %s", id)
 	}
+	c.mu.RLock()
+	cached, ok := c.cache[id]
+	c.mu.RUnlock()
+	if ok {
+		return cloneDevice(cached), nil
+	}
+	return c.refreshDevice(d), nil
+}
 
-	return c.queryDevice(dev), nil
+// GetDeviceLive queries a device, updates the cache and emits change events.
+func (c *Client) GetDeviceLive(id string) (*models.Device, error) {
+	d, ok := c.deviceSnapshot(id)
+	if !ok {
+		return nil, fmt.Errorf("device not found: %s", id)
+	}
+	device := c.refreshDevice(d)
+	c.emitChanges(device)
+	return device, nil
 }
 
 // SetDeviceState sends a command to a Shelly device
 func (c *Client) SetDeviceState(id string, cmd models.DeviceCommand) error {
-	c.mu.RLock()
-	dev, ok := c.devices[id]
-	c.mu.RUnlock()
-
+	d, ok := c.deviceSnapshot(id)
 	if !ok {
 		return fmt.Errorf("device not found: %s", id)
 	}
-
-	if dev.Generation >= 2 {
-		return c.setDeviceStateGen2(dev, cmd)
+	if err := validateCommand(cmd); err != nil {
+		return err
 	}
-	return c.setDeviceStateGen1(dev, cmd)
+
+	if d.Generation >= 2 {
+		return c.setDeviceStateGen2(&d, cmd)
+	}
+	return c.setDeviceStateGen1(&d, cmd)
 }
 
-// GetInputs queries inputs (buttons/switches) from all configured devices
+func validateCommand(cmd models.DeviceCommand) error {
+	if cmd.Brightness != nil && (*cmd.Brightness < 0 || *cmd.Brightness > 100) {
+		return fmt.Errorf("brightness must be between 0 and 100")
+	}
+	if cmd.Position != nil && (*cmd.Position < 0 || *cmd.Position > 100) {
+		return fmt.Errorf("position must be between 0 and 100")
+	}
+	if cmd.Channel != nil && (*cmd.Channel < 0 || *cmd.Channel > 15) {
+		return fmt.Errorf("channel must be between 0 and 15")
+	}
+	for name, v := range map[string]*int{"red": cmd.Red, "green": cmd.Green, "blue": cmd.Blue, "white": cmd.White} {
+		if v != nil && (*v < 0 || *v > 255) {
+			return fmt.Errorf("%s must be between 0 and 255", name)
+		}
+	}
+	if cmd.On == nil && cmd.Brightness == nil && cmd.Position == nil && cmd.ColorTemp == nil &&
+		cmd.Red == nil && cmd.Green == nil && cmd.Blue == nil && cmd.White == nil {
+		return fmt.Errorf("no actionable command")
+	}
+	return nil
+}
+
+// GetInputs returns the last known inputs (buttons/switches) of all devices.
 func (c *Client) GetInputs() []*models.Input {
+	// Ensure every device has been queried at least once.
+	c.GetDevices()
+
 	c.mu.RLock()
-	devicesCopy := make([]*DeviceInfo, 0, len(c.devices))
-	for _, d := range c.devices {
-		cp := *d
-		devicesCopy = append(devicesCopy, &cp)
+	defer c.mu.RUnlock()
+	ids := make([]string, 0, len(c.inputCache))
+	for id := range c.inputCache {
+		ids = append(ids, id)
 	}
-	c.mu.RUnlock()
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	sort.Strings(ids)
 	results := make([]*models.Input, 0)
-
-	for _, dev := range devicesCopy {
-		wg.Add(1)
-		go func(d *DeviceInfo) {
-			defer wg.Done()
-			inputs := c.queryInputs(d)
-			mu.Lock()
-			results = append(results, inputs...)
-			mu.Unlock()
-		}(dev)
+	for _, id := range ids {
+		for _, in := range c.inputCache[id] {
+			cp := *in
+			results = append(results, &cp)
+		}
 	}
-
-	wg.Wait()
 	return results
 }
 
@@ -195,106 +375,165 @@ func (c *Client) PushEvent(event Event) {
 	select {
 	case c.eventChan <- event:
 	default:
-		log.Warn().Str("id", event.DeviceID).Msg("Event channel full, dropping MQTT event")
+		log.Warn().Str("id", event.DeviceID).Msg("Event channel full, dropping event")
 	}
 }
 
 // Close stops the client and releases resources
 func (c *Client) Close() {
-	close(c.stopChan)
+	c.stopOnce.Do(func() {
+		close(c.stopChan)
+		c.httpClient.CloseIdleConnections()
+	})
 }
 
-// --- Gen2+ RPC helpers ---
+// --- HTTP transport ---
 
-func (c *Client) rpcGet(ip, method string) (map[string]interface{}, error) {
-	url := fmt.Sprintf("http://%s/rpc/%s", ip, method)
-	resp, err := c.httpClient.Get(url)
+// doRequest performs an HTTP request against a device, handling Basic (Gen1)
+// and Digest (Gen2+) authentication and non-2xx status codes.
+func (c *Client) doRequest(d *DeviceInfo, method, rawURL string, body []byte) ([]byte, error) {
+	build := func() (*http.Request, error) {
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, rawURL, rdr)
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if d.Password != "" && d.Generation < 2 {
+			user := d.Username
+			if user == "" {
+				user = "admin"
+			}
+			req.SetBasicAuth(user, d.Password)
+		}
+		return req, nil
+	}
+
+	req, err := build()
 	if err != nil {
-		return nil, fmt.Errorf("HTTP GET %s: %w", url, err)
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, rawURL, err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized && d.Password != "" {
+		challenge, ok := parseDigestChallenge(resp.Header.Get("WWW-Authenticate"))
+		drain(resp)
+		if ok {
+			user := d.Username
+			if user == "" {
+				user = "admin"
+			}
+			req, err = build()
+			if err != nil {
+				return nil, err
+			}
+			authz, err := digestAuthorization(challenge, user, d.Password, method, req.URL.RequestURI())
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Authorization", authz)
+			resp, err = c.httpClient.Do(req)
+			if err != nil {
+				return nil, fmt.Errorf("%s %s: %w", method, rawURL, err)
+			}
+		} else {
+			return nil, fmt.Errorf("%s %s: authentication required", method, rawURL)
+		}
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("reading response from %s: %w", url, err)
+		return nil, fmt.Errorf("reading response from %s: %w", rawURL, err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(data))
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return nil, fmt.Errorf("%s %s: HTTP %d %s", method, rawURL, resp.StatusCode, msg)
+	}
+	return data, nil
+}
 
+func drain(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+	resp.Body.Close()
+}
+
+func decodeJSONObject(data []byte, src string) (map[string]interface{}, error) {
 	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parsing JSON from %s: %w", url, err)
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parsing JSON from %s: %w", src, err)
 	}
 	return result, nil
 }
 
-func (c *Client) rpcPost(ip, method string, payload interface{}) (map[string]interface{}, error) {
-	url := fmt.Sprintf("http://%s/rpc", ip)
+// --- Gen2+ RPC helpers ---
 
-	// Use standard Gen2 RPC format: {"id":1,"method":"...","params":{...}}
+func (c *Client) rpcGet(d *DeviceInfo, method string) (map[string]interface{}, error) {
+	rawURL := fmt.Sprintf("http://%s/rpc/%s", d.IP, method)
+	data, err := c.doRequest(d, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodeJSONObject(data, rawURL)
+}
+
+func (c *Client) rpcPost(d *DeviceInfo, method string, payload interface{}) (map[string]interface{}, error) {
+	rawURL := fmt.Sprintf("http://%s/rpc", d.IP)
+
 	rpcRequest := map[string]interface{}{
 		"id":     1,
 		"method": method,
 		"params": payload,
 	}
-
-	data, err := json.Marshal(rpcRequest)
+	body, err := json.Marshal(rpcRequest)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling RPC request: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(data))
+	data, err := c.doRequest(d, http.MethodPost, rawURL, body)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP POST %s (%s): %w", url, method, err)
+		return nil, fmt.Errorf("%s: %w", method, err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
+	rpcResp, err := decodeJSONObject(data, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("reading response from %s: %w", url, err)
+		return nil, err
 	}
 
-	var rpcResp map[string]interface{}
-	if err := json.Unmarshal(body, &rpcResp); err != nil {
-		return nil, fmt.Errorf("parsing JSON from %s: %w", url, err)
-	}
-
-	// Check for RPC error
 	if rpcErr, ok := rpcResp["error"].(map[string]interface{}); ok {
-		errMsg := fmt.Sprintf("%v", rpcErr["message"])
-		return nil, fmt.Errorf("RPC error for %s: %s", method, errMsg)
+		return nil, fmt.Errorf("RPC error for %s: %v", method, rpcErr["message"])
 	}
-
-	// Return the "result" field
 	if result, ok := rpcResp["result"].(map[string]interface{}); ok {
 		return result, nil
 	}
-
 	return rpcResp, nil
 }
 
 // --- Gen1 HTTP helpers ---
 
-func (c *Client) gen1Get(ip, path string) (map[string]interface{}, error) {
-	url := fmt.Sprintf("http://%s/%s", ip, path)
-	resp, err := c.httpClient.Get(url)
+func (c *Client) gen1Get(d *DeviceInfo, path string) (map[string]interface{}, error) {
+	rawURL := fmt.Sprintf("http://%s/%s", d.IP, path)
+	data, err := c.doRequest(d, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP GET %s: %w", url, err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response from %s: %w", url, err)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parsing JSON from %s: %w", url, err)
-	}
-	return result, nil
+	return decodeJSONObject(data, rawURL)
 }
 
-// queryDevice queries a single device and returns a models.Device
-func (c *Client) queryDevice(d *DeviceInfo) *models.Device {
+// --- Querying ---
+
+// queryDevice queries a single device and returns its state and inputs.
+func (c *Client) queryDevice(d *DeviceInfo) (*models.Device, []*models.Input) {
 	device := &models.Device{
 		ID:         d.ConfigID,
 		Name:       d.Name,
@@ -303,577 +542,130 @@ func (c *Client) queryDevice(d *DeviceInfo) *models.Device {
 		Online:     false,
 	}
 
+	var inputs []*models.Input
 	if d.Generation >= 2 {
-		c.queryDeviceGen2(d, device)
+		inputs = c.queryDeviceGen2(d, device)
 	} else {
-		c.queryDeviceGen1(d, device)
+		inputs = c.queryDeviceGen1(d, device)
 	}
-
-	return device
+	return device, inputs
 }
 
-func (c *Client) queryDeviceGen2(d *DeviceInfo, device *models.Device) {
-	// Get device info
-	info, err := c.rpcGet(d.IP, "Shelly.GetDeviceInfo")
-	if err != nil {
-		c.mu.Lock()
-		wasOffline := c.offlineState[d.ConfigID]
-		c.offlineState[d.ConfigID] = true
-		c.mu.Unlock()
-		if !wasOffline {
-			log.Warn().Err(err).Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device unreachable (Gen2)")
-		} else {
-			log.Debug().Str("id", d.ConfigID).Msg("Device still unreachable (Gen2)")
-		}
-		return
+func (c *Client) markOffline(d *DeviceInfo, gen string, err error) {
+	c.mu.Lock()
+	wasOffline := c.offlineState[d.ConfigID]
+	c.offlineState[d.ConfigID] = true
+	c.mu.Unlock()
+	if !wasOffline {
+		log.Warn().Err(err).Str("id", d.ConfigID).Str("ip", d.IP).Msgf("Device unreachable (%s)", gen)
+	} else {
+		log.Debug().Str("id", d.ConfigID).Msgf("Device still unreachable (%s)", gen)
 	}
+}
 
-	// Mark as back online if it was offline
+func (c *Client) markOnline(d *DeviceInfo, gen string) {
 	c.mu.Lock()
 	wasOffline := c.offlineState[d.ConfigID]
 	c.offlineState[d.ConfigID] = false
 	c.mu.Unlock()
 	if wasOffline {
-		log.Info().Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device back online (Gen2)")
+		log.Info().Str("id", d.ConfigID).Str("ip", d.IP).Msgf("Device back online (%s)", gen)
 	}
-
-	device.Online = true
-
-	if model, ok := info["model"].(string); ok {
-		device.Model = model
-	}
-	if fw, ok := info["fw_id"].(string); ok {
-		device.FirmwareVer = fw
-	}
-	if app, ok := info["app"].(string); ok {
-		device.Type = c.appToDeviceType(app)
-	}
-
-	// Get status
-	status, err := c.rpcGet(d.IP, "Shelly.GetStatus")
-	if err != nil {
-		log.Warn().Err(err).Str("id", d.ConfigID).Msg("Failed to get device status (Gen2)")
-		return
-	}
-
-	c.parseGen2Status(status, device)
 }
 
-func (c *Client) queryDeviceGen1(d *DeviceInfo, device *models.Device) {
-	status, err := c.gen1Get(d.IP, "status")
-	if err != nil {
-		c.mu.Lock()
-		wasOffline := c.offlineState[d.ConfigID]
-		c.offlineState[d.ConfigID] = true
-		c.mu.Unlock()
-		if !wasOffline {
-			log.Warn().Err(err).Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device unreachable (Gen1)")
-		} else {
-			log.Debug().Str("id", d.ConfigID).Msg("Device still unreachable (Gen1)")
-		}
-		return
+func (c *Client) deviceInfoGen2(d *DeviceInfo) (cachedInfo, error) {
+	c.mu.RLock()
+	info, ok := c.infoCache[d.ConfigID]
+	c.mu.RUnlock()
+	if ok && time.Since(info.fetched) < deviceInfoTTL {
+		return info, nil
 	}
 
+	raw, err := c.rpcGet(d, "Shelly.GetDeviceInfo")
+	if err != nil {
+		return cachedInfo{}, err
+	}
+	info = cachedInfo{fetched: time.Now()}
+	if model, ok := raw["model"].(string); ok {
+		info.model = model
+	}
+	if fw, ok := raw["fw_id"].(string); ok {
+		info.firmware = fw
+	}
+	if app, ok := raw["app"].(string); ok {
+		info.app = app
+	}
 	c.mu.Lock()
-	wasOffline := c.offlineState[d.ConfigID]
-	c.offlineState[d.ConfigID] = false
+	c.infoCache[d.ConfigID] = info
 	c.mu.Unlock()
-	if wasOffline {
-		log.Info().Str("id", d.ConfigID).Str("ip", d.IP).Msg("Device back online (Gen1)")
-	}
+	return info, nil
+}
 
+func (c *Client) queryDeviceGen2(d *DeviceInfo, device *models.Device) []*models.Input {
+	info, err := c.deviceInfoGen2(d)
+	if err != nil {
+		c.markOffline(d, "Gen2", err)
+		return nil
+	}
+	device.Model = info.model
+	device.FirmwareVer = info.firmware
+	device.Type = appToDeviceType(info.app)
+
+	status, err := c.rpcGet(d, "Shelly.GetStatus")
+	if err != nil {
+		c.markOffline(d, "Gen2", err)
+		return nil
+	}
+	c.markOnline(d, "Gen2")
 	device.Online = true
 
-	// Try to determine device type from status
-	if relays, ok := status["relays"].([]interface{}); ok && len(relays) > 0 {
-		if rollers, ok := status["rollers"].([]interface{}); ok && len(rollers) > 0 {
-			device.Type = "roller"
-			device.Capabilities.SupportsRoller = true
-			if roller, ok := rollers[0].(map[string]interface{}); ok {
-				if pos, ok := roller["current_pos"].(float64); ok {
-					device.State.Position = int(pos)
-				}
-			}
-		} else {
-			device.Type = "switch"
-			if relay, ok := relays[0].(map[string]interface{}); ok {
-				if ison, ok := relay["ison"].(bool); ok {
-					device.State.On = ison
-				}
-				if power, ok := relay["power"].(float64); ok {
-					device.State.Power = power
-					device.Capabilities.SupportsPower = true
-				}
-			}
-		}
-	}
-
-	if lights, ok := status["lights"].([]interface{}); ok && len(lights) > 0 {
-		device.Type = "dimmer"
-		device.Capabilities.SupportsDimming = true
-		if light, ok := lights[0].(map[string]interface{}); ok {
-			if ison, ok := light["ison"].(bool); ok {
-				device.State.On = ison
-			}
-			if bri, ok := light["brightness"].(float64); ok {
-				device.State.Brightness = bri
-			}
-		}
-	}
-
-	// Firmware
-	if update, ok := status["update"].(map[string]interface{}); ok {
-		if oldVer, ok := update["old_version"].(string); ok {
-			device.FirmwareVer = oldVer
-		}
-	}
+	parseGen2Status(status, device)
+	return parseGen2Inputs(status, d.ConfigID, d.Name)
 }
 
-// parseGen2Status dynamically parses all Gen2+ status components
-func (c *Client) parseGen2Status(status map[string]interface{}, device *models.Device) {
-	switchCount := 0
-	lightCount := 0
-	coverCount := 0
-
-	// Parse all switch:N components
-	for i := 0; i < 4; i++ {
-		key := fmt.Sprintf("switch:%d", i)
-		sw, ok := status[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		switchCount++
-
-		ch := models.Channel{Index: i, Type: "switch"}
-		if output, ok := sw["output"].(bool); ok {
-			ch.On = output
-		}
-		if power, ok := sw["apower"].(float64); ok {
-			ch.Power = power
-		}
-		if voltage, ok := sw["voltage"].(float64); ok {
-			ch.Voltage = voltage
-		}
-		if current, ok := sw["current"].(float64); ok {
-			ch.Current = current
-		}
-		if energy, ok := sw["aenergy"].(map[string]interface{}); ok {
-			if total, ok := energy["total"].(float64); ok {
-				ch.Energy = total
-			}
-		}
-
-		// First channel populates primary state
-		if i == 0 {
-			device.State.On = ch.On
-			device.State.Power = ch.Power
-			device.State.Voltage = ch.Voltage
-			device.State.Current = ch.Current
-			device.State.Energy = ch.Energy
-			if ch.Power > 0 || ch.Voltage > 0 {
-				device.Capabilities.SupportsPower = true
-			}
-		}
-
-		device.Channels = append(device.Channels, ch)
+func (c *Client) queryDeviceGen1(d *DeviceInfo, device *models.Device) []*models.Input {
+	status, err := c.gen1Get(d, "status")
+	if err != nil {
+		c.markOffline(d, "Gen1", err)
+		return nil
 	}
+	c.markOnline(d, "Gen1")
+	device.Online = true
 
-	if switchCount > 0 && device.Type == "" {
-		device.Type = "switch"
-	}
-	if switchCount > 1 {
-		device.Capabilities.MultiChannel = true
-		device.Capabilities.ChannelCount = switchCount
-	}
-
-	// Parse all light:N components
-	for i := 0; i < 5; i++ {
-		key := fmt.Sprintf("light:%d", i)
-		lt, ok := status[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		lightCount++
-
-		ch := models.Channel{Index: i, Type: "light"}
-		if output, ok := lt["output"].(bool); ok {
-			ch.On = output
-		}
-		if bri, ok := lt["brightness"].(float64); ok {
-			ch.Brightness = bri
-		}
-		if power, ok := lt["apower"].(float64); ok {
-			ch.Power = power
-		}
-
-		if i == 0 {
-			device.State.On = ch.On
-			device.State.Brightness = ch.Brightness
-			device.State.Power = ch.Power
-			device.Capabilities.SupportsDimming = true
-			if ch.Power > 0 {
-				device.Capabilities.SupportsPower = true
-			}
-		}
-
-		device.Channels = append(device.Channels, ch)
-	}
-
-	if lightCount > 0 {
-		device.Type = "light"
-	}
-	if lightCount > 1 {
-		device.Capabilities.MultiChannel = true
-		device.Capabilities.ChannelCount = lightCount
-	}
-
-	// Parse all cover:N components
-	for i := 0; i < 2; i++ {
-		key := fmt.Sprintf("cover:%d", i)
-		cover, ok := status[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		coverCount++
-
-		ch := models.Channel{Index: i, Type: "cover"}
-		if pos, ok := cover["current_pos"].(float64); ok {
-			ch.Position = int(pos)
-		}
-		if power, ok := cover["apower"].(float64); ok {
-			ch.Power = power
-		}
-
-		if i == 0 {
-			device.State.Position = ch.Position
-			device.State.Power = ch.Power
-			device.Capabilities.SupportsRoller = true
-			if ch.Power > 0 {
-				device.Capabilities.SupportsPower = true
-			}
-		}
-
-		device.Channels = append(device.Channels, ch)
-	}
-
-	if coverCount > 0 {
-		device.Type = "roller"
-	}
-	if coverCount > 1 {
-		device.Capabilities.MultiChannel = true
-		device.Capabilities.ChannelCount = coverCount
-	}
-
-	// RGB
-	if rgb, ok := status["rgb:0"].(map[string]interface{}); ok {
-		device.Type = "rgb"
-		device.Capabilities.SupportsColor = true
-		device.Capabilities.SupportsDimming = true
-		if output, ok := rgb["output"].(bool); ok {
-			device.State.On = output
-		}
-		if r, ok := rgb["red"].(float64); ok {
-			device.State.Red = int(r)
-		}
-		if g, ok := rgb["green"].(float64); ok {
-			device.State.Green = int(g)
-		}
-		if b, ok := rgb["blue"].(float64); ok {
-			device.State.Blue = int(b)
-		}
-	}
-
-	// RGBW
-	if rgbw, ok := status["rgbw:0"].(map[string]interface{}); ok {
-		device.Type = "rgbw"
-		device.Capabilities.SupportsColor = true
-		device.Capabilities.SupportsDimming = true
-		if output, ok := rgbw["output"].(bool); ok {
-			device.State.On = output
-		}
-		if r, ok := rgbw["red"].(float64); ok {
-			device.State.Red = int(r)
-		}
-		if g, ok := rgbw["green"].(float64); ok {
-			device.State.Green = int(g)
-		}
-		if b, ok := rgbw["blue"].(float64); ok {
-			device.State.Blue = int(b)
-		}
-		if w, ok := rgbw["white"].(float64); ok {
-			device.State.White = int(w)
-		}
-	}
-
-	// CCT (tunable white)
-	if cct, ok := status["cct:0"].(map[string]interface{}); ok {
-		device.Type = "light"
-		device.Capabilities.SupportsDimming = true
-		device.Capabilities.SupportsColorTemp = true
-		if output, ok := cct["output"].(bool); ok {
-			device.State.On = output
-		}
-		if bri, ok := cct["brightness"].(float64); ok {
-			device.State.Brightness = bri
-		}
-		if ct, ok := cct["ct"].(float64); ok {
-			device.State.ColorTemp = int(ct)
-		}
-	}
-
-	// --- Sensor components ---
-
-	// Temperature sensors (built-in and add-on with IDs 100+)
-	for i := 0; i < 200; i++ {
-		key := fmt.Sprintf("temperature:%d", i)
-		temp, ok := status[key].(map[string]interface{})
-		if !ok {
-			// Skip gaps between 4 and 100 for add-on sensors
-			if i > 4 && i < 100 {
-				i = 99
-			}
-			continue
-		}
-		if tC, ok := temp["tC"].(float64); ok {
-			// Only first temperature populates primary state
-			if device.State.Temperature == nil {
-				device.State.Temperature = &tC
-			}
-			device.Capabilities.SupportsTemperature = true
-		}
-	}
-
-	// Humidity sensors (built-in and add-on)
-	for i := 0; i < 200; i++ {
-		key := fmt.Sprintf("humidity:%d", i)
-		hum, ok := status[key].(map[string]interface{})
-		if !ok {
-			if i > 4 && i < 100 {
-				i = 99
-			}
-			continue
-		}
-		if rh, ok := hum["rh"].(float64); ok {
-			if device.State.Humidity == nil {
-				device.State.Humidity = &rh
-			}
-			device.Capabilities.SupportsHumidity = true
-		}
-	}
-
-	// Illuminance
-	if ill, ok := status["illuminance:0"].(map[string]interface{}); ok {
-		if lux, ok := ill["lux"].(float64); ok {
-			device.State.Illuminance = &lux
-			device.Capabilities.SupportsIlluminance = true
-		}
-	}
-
-	// Smoke alarm
-	if smoke, ok := status["smoke:0"].(map[string]interface{}); ok {
-		if alarm, ok := smoke["alarm"].(bool); ok {
-			device.State.Smoke = &alarm
-			device.Capabilities.SupportsSmoke = true
-		}
-	}
-
-	// Flood alarm
-	if flood, ok := status["flood:0"].(map[string]interface{}); ok {
-		if alarm, ok := flood["alarm"].(bool); ok {
-			device.State.Flood = &alarm
-			device.Capabilities.SupportsFlood = true
-		}
-	}
-
-	// Battery (devicepower:0)
-	if dp, ok := status["devicepower:0"].(map[string]interface{}); ok {
-		if bat, ok := dp["battery"].(map[string]interface{}); ok {
-			if pct, ok := bat["percent"].(float64); ok {
-				device.State.Battery = &pct
-				device.Capabilities.SupportsBattery = true
-			}
-		}
-	}
-
-	// --- Energy meter components ---
-
-	// 3-phase energy meter (em:0) - Pro 3EM, 3EM Gen3
-	if em, ok := status["em:0"].(map[string]interface{}); ok {
-		device.Capabilities.SupportsEnergyMeter = true
-		device.Capabilities.SupportsPower = true
-		if device.Type == "" || device.Type == "switch" {
-			device.Type = "meter"
-		}
-		if p, ok := em["total_act_power"].(float64); ok {
-			device.State.TotalPower = p
-			device.State.Power = p
-		}
-		if p, ok := em["a_act_power"].(float64); ok {
-			device.State.PowerA = p
-		}
-		if p, ok := em["b_act_power"].(float64); ok {
-			device.State.PowerB = p
-		}
-		if p, ok := em["c_act_power"].(float64); ok {
-			device.State.PowerC = p
-		}
-		if v, ok := em["a_voltage"].(float64); ok {
-			device.State.VoltageA = v
-		}
-		if v, ok := em["b_voltage"].(float64); ok {
-			device.State.VoltageB = v
-		}
-		if v, ok := em["c_voltage"].(float64); ok {
-			device.State.VoltageC = v
-		}
-		if a, ok := em["a_current"].(float64); ok {
-			device.State.CurrentA = a
-		}
-		if a, ok := em["b_current"].(float64); ok {
-			device.State.CurrentB = a
-		}
-		if a, ok := em["c_current"].(float64); ok {
-			device.State.CurrentC = a
-		}
-	}
-
-	// 3-phase energy data (emdata:0)
-	if emdata, ok := status["emdata:0"].(map[string]interface{}); ok {
-		if total, ok := emdata["total_act"].(float64); ok {
-			device.State.TotalEnergy = total
-			device.State.Energy = total
-		}
-	}
-
-	// Single-phase energy meters (em1:N) - Pro EM, EM Gen3
-	for i := 0; i < 3; i++ {
-		key := fmt.Sprintf("em1:%d", i)
-		em1, ok := status[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		device.Capabilities.SupportsEnergyMeter = true
-		device.Capabilities.SupportsPower = true
-		if device.Type == "" || device.Type == "switch" {
-			device.Type = "meter"
-		}
-		if i == 0 {
-			if p, ok := em1["act_power"].(float64); ok {
-				device.State.Power = p
-				device.State.PowerA = p
-			}
-			if v, ok := em1["voltage"].(float64); ok {
-				device.State.Voltage = v
-				device.State.VoltageA = v
-			}
-			if a, ok := em1["current"].(float64); ok {
-				device.State.Current = a
-				device.State.CurrentA = a
-			}
-		} else if i == 1 {
-			if p, ok := em1["act_power"].(float64); ok {
-				device.State.PowerB = p
-			}
-			if v, ok := em1["voltage"].(float64); ok {
-				device.State.VoltageB = v
-			}
-			if a, ok := em1["current"].(float64); ok {
-				device.State.CurrentB = a
-			}
-		}
-	}
-
-	// Single-phase energy data (em1data:N)
-	for i := 0; i < 3; i++ {
-		key := fmt.Sprintf("em1data:%d", i)
-		em1data, ok := status[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if total, ok := em1data["total_act_energy"].(float64); ok {
-			device.State.TotalEnergy += total
-			if i == 0 {
-				device.State.Energy = total
-			}
-		}
-	}
-
-	// Standalone power meter (pm1:0) - PM Mini Gen3
-	if pm1, ok := status["pm1:0"].(map[string]interface{}); ok {
-		device.Capabilities.SupportsPower = true
-		if device.Type == "" {
-			device.Type = "meter"
-		}
-		if p, ok := pm1["apower"].(float64); ok {
-			device.State.Power = p
-		}
-		if v, ok := pm1["voltage"].(float64); ok {
-			device.State.Voltage = v
-		}
-		if a, ok := pm1["current"].(float64); ok {
-			device.State.Current = a
-		}
-		if energy, ok := pm1["aenergy"].(map[string]interface{}); ok {
-			if total, ok := energy["total"].(float64); ok {
-				device.State.Energy = total
-			}
-		}
-	}
-
-	// Determine type for sensor-only devices
-	if device.Type == "" {
-		if device.Capabilities.SupportsSmoke || device.Capabilities.SupportsFlood {
-			device.Type = "sensor"
-		} else if device.Capabilities.SupportsTemperature || device.Capabilities.SupportsHumidity {
-			device.Type = "sensor"
-		} else if device.Capabilities.SupportsEnergyMeter {
-			device.Type = "meter"
-		}
-	}
+	parseGen1Status(status, device)
+	return parseGen1Inputs(status, d.ConfigID, d.Name)
 }
 
-// appToDeviceType maps the Gen2 "app" field to a device type
-func (c *Client) appToDeviceType(app string) string {
-	app = strings.ToLower(app)
-	switch {
-	case strings.Contains(app, "light"):
-		return "light"
-	case strings.Contains(app, "dimmer"):
-		return "dimmer"
-	case strings.Contains(app, "cover"), strings.Contains(app, "roller"):
-		return "roller"
-	case strings.Contains(app, "rgbw"):
-		return "rgbw"
-	case strings.Contains(app, "rgb"):
-		return "rgb"
-	case strings.Contains(app, "plug"):
-		return "switch"
-	case strings.Contains(app, "switch"), strings.Contains(app, "relay"):
-		return "switch"
-	case strings.Contains(app, "walldisplay"):
-		return "" // has relay + sensors; type determined by parseGen2Status
-	case strings.Contains(app, "em"), strings.Contains(app, "pm"):
-		return "" // energy meter; type determined by parseGen2Status
-	case strings.Contains(app, "i4"), strings.Contains(app, "input"):
-		return "switch" // input-only devices
-	case strings.Contains(app, "smoke"):
-		return "sensor"
-	case strings.Contains(app, "flood"):
-		return "sensor"
-	case strings.Contains(app, "blu"), strings.Contains(app, "sensor"), strings.Contains(app, "ht"):
-		return "sensor"
-	default:
-		return "" // let parseGen2Status determine from components
-	}
-}
-
-// --- SetDeviceState implementations ---
+// --- Commands ---
 
 func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) error {
-	// Determine target channel (default 0)
 	channelID := 0
 	if cmd.Channel != nil {
 		channelID = *cmd.Channel
+	}
+
+	// Colour commands (RGB / RGBW components)
+	if cmd.Red != nil || cmd.Green != nil || cmd.Blue != nil || cmd.White != nil {
+		payload := map[string]interface{}{"id": channelID}
+		if cmd.On != nil {
+			payload["on"] = *cmd.On
+		}
+		if cmd.Brightness != nil {
+			payload["brightness"] = int(*cmd.Brightness)
+		}
+		if cmd.Red != nil && cmd.Green != nil && cmd.Blue != nil {
+			payload["rgb"] = []int{*cmd.Red, *cmd.Green, *cmd.Blue}
+		}
+		method := "RGB.Set"
+		if cmd.White != nil {
+			payload["white"] = *cmd.White
+			method = "RGBW.Set"
+		}
+		if _, err := c.rpcPost(dev, method, payload); err != nil {
+			return fmt.Errorf("colour command failed for %s: %w", dev.ConfigID, err)
+		}
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Msg("Colour set (Gen2)")
+		return nil
 	}
 
 	if cmd.Position != nil {
@@ -881,29 +673,32 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 			"id":  channelID,
 			"pos": *cmd.Position,
 		}
-		_, err := c.rpcPost(dev.IP, "Cover.GoToPosition", payload)
-		if err != nil {
+		if _, err := c.rpcPost(dev, "Cover.GoToPosition", payload); err != nil {
 			return fmt.Errorf("cover command failed for %s: %w", dev.ConfigID, err)
 		}
 		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Int("pos", *cmd.Position).Msg("Cover position set (Gen2)")
 		return nil
 	}
 
-	if cmd.Brightness != nil {
-		on := true
+	if cmd.Brightness != nil || cmd.ColorTemp != nil {
+		payload := map[string]interface{}{"id": channelID}
 		if cmd.On != nil {
-			on = *cmd.On
+			payload["on"] = *cmd.On
+		} else if cmd.Brightness != nil {
+			payload["on"] = *cmd.Brightness > 0
 		}
-		payload := map[string]interface{}{
-			"id":         channelID,
-			"on":         on,
-			"brightness": int(*cmd.Brightness),
+		if cmd.Brightness != nil {
+			payload["brightness"] = int(*cmd.Brightness)
 		}
-		_, err := c.rpcPost(dev.IP, "Light.Set", payload)
-		if err != nil {
+		method := "Light.Set"
+		if cmd.ColorTemp != nil {
+			payload["ct"] = *cmd.ColorTemp
+			method = "CCT.Set"
+		}
+		if _, err := c.rpcPost(dev, method, payload); err != nil {
 			return fmt.Errorf("light command failed for %s: %w", dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", on).Float64("bri", *cmd.Brightness).Msg("Light set (Gen2)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Interface("payload", payload).Msg("Light set (Gen2)")
 		return nil
 	}
 
@@ -912,119 +707,153 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 			"id": channelID,
 			"on": *cmd.On,
 		}
-		// Try Switch.Set first; for lights fallback to Light.Set
-		_, err := c.rpcPost(dev.IP, "Switch.Set", payload)
-		if err != nil {
-			_, err2 := c.rpcPost(dev.IP, "Light.Set", payload)
-			if err2 != nil {
-				return fmt.Errorf("switch/light command failed for %s: %w", dev.ConfigID, err)
+		// Pick the component from the cached device type; fall back to trying both.
+		methods := []string{"Switch.Set", "Light.Set"}
+		if cached, err := c.GetDevice(dev.ConfigID); err == nil {
+			switch cached.Type {
+			case "light", "dimmer":
+				methods = []string{"Light.Set", "Switch.Set"}
+			case "rgb":
+				methods = []string{"RGB.Set", "Switch.Set"}
+			case "rgbw":
+				methods = []string{"RGBW.Set", "Switch.Set"}
 			}
 		}
-		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", *cmd.On).Msg("Switch set (Gen2)")
-		return nil
+		var lastErr error
+		for _, m := range methods {
+			if _, err := c.rpcPost(dev, m, payload); err == nil {
+				log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", *cmd.On).Str("method", m).Msg("Output set (Gen2)")
+				return nil
+			} else {
+				lastErr = err
+			}
+		}
+		return fmt.Errorf("switch/light command failed for %s: %w", dev.ConfigID, lastErr)
 	}
 
 	return fmt.Errorf("no actionable command for device %s", dev.ConfigID)
 }
 
 func (c *Client) setDeviceStateGen1(dev *DeviceInfo, cmd models.DeviceCommand) error {
+	channelID := 0
+	if cmd.Channel != nil {
+		channelID = *cmd.Channel
+	}
+
+	if cmd.Red != nil || cmd.Green != nil || cmd.Blue != nil || cmd.White != nil {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "color/%d?", channelID)
+		if cmd.On != nil {
+			fmt.Fprintf(&sb, "turn=%s&", onOff(*cmd.On))
+		}
+		if cmd.Red != nil {
+			fmt.Fprintf(&sb, "red=%d&", *cmd.Red)
+		}
+		if cmd.Green != nil {
+			fmt.Fprintf(&sb, "green=%d&", *cmd.Green)
+		}
+		if cmd.Blue != nil {
+			fmt.Fprintf(&sb, "blue=%d&", *cmd.Blue)
+		}
+		if cmd.White != nil {
+			fmt.Fprintf(&sb, "white=%d&", *cmd.White)
+		}
+		if cmd.Brightness != nil {
+			fmt.Fprintf(&sb, "gain=%d&", int(*cmd.Brightness))
+		}
+		if _, err := c.gen1Get(dev, strings.TrimRight(sb.String(), "&?")); err != nil {
+			return fmt.Errorf("colour command failed for %s: %w", dev.ConfigID, err)
+		}
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Msg("Colour set (Gen1)")
+		return nil
+	}
+
 	if cmd.Position != nil {
-		path := fmt.Sprintf("roller/0?go=to_pos&roller_pos=%d", *cmd.Position)
-		_, err := c.gen1Get(dev.IP, path)
-		if err != nil {
+		path := fmt.Sprintf("roller/%d?go=to_pos&roller_pos=%d", channelID, *cmd.Position)
+		if _, err := c.gen1Get(dev, path); err != nil {
 			return fmt.Errorf("roller command failed for %s: %w", dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Int("pos", *cmd.Position).Msg("Roller position set (Gen1)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Int("pos", *cmd.Position).Msg("Roller position set (Gen1)")
 		return nil
 	}
 
 	if cmd.Brightness != nil {
-		on := "on"
-		if cmd.On != nil && !*cmd.On {
-			on = "off"
+		on := true
+		if cmd.On != nil {
+			on = *cmd.On
+		} else {
+			on = *cmd.Brightness > 0
 		}
-		path := fmt.Sprintf("light/0?turn=%s&brightness=%d", on, int(*cmd.Brightness))
-		_, err := c.gen1Get(dev.IP, path)
-		if err != nil {
+		path := fmt.Sprintf("light/%d?turn=%s&brightness=%d", channelID, onOff(on), int(*cmd.Brightness))
+		if _, err := c.gen1Get(dev, path); err != nil {
 			return fmt.Errorf("dimmer command failed for %s: %w", dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Str("turn", on).Float64("bri", *cmd.Brightness).Msg("Dimmer set (Gen1)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", on).Float64("bri", *cmd.Brightness).Msg("Dimmer set (Gen1)")
 		return nil
 	}
 
 	if cmd.On != nil {
-		turn := "off"
-		if *cmd.On {
-			turn = "on"
+		component := "relay"
+		if cached, err := c.GetDevice(dev.ConfigID); err == nil {
+			switch cached.Type {
+			case "light", "dimmer":
+				component = "light"
+			case "rgb", "rgbw":
+				component = "color"
+			}
 		}
-		path := fmt.Sprintf("relay/0?turn=%s", turn)
-		_, err := c.gen1Get(dev.IP, path)
-		if err != nil {
-			return fmt.Errorf("relay command failed for %s: %w", dev.ConfigID, err)
+		path := fmt.Sprintf("%s/%d?turn=%s", component, channelID, onOff(*cmd.On))
+		if _, err := c.gen1Get(dev, path); err != nil {
+			return fmt.Errorf("%s command failed for %s: %w", component, dev.ConfigID, err)
 		}
-		log.Info().Str("id", dev.ConfigID).Str("turn", turn).Msg("Relay set (Gen1)")
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", *cmd.On).Msg("Output set (Gen1)")
 		return nil
 	}
 
 	return fmt.Errorf("no actionable command for device %s", dev.ConfigID)
 }
 
-// queryInputs queries input states from a device
-func (c *Client) queryInputs(d *DeviceInfo) []*models.Input {
-	var inputs []*models.Input
-
-	if d.Generation >= 2 {
-		status, err := c.rpcGet(d.IP, "Shelly.GetStatus")
-		if err != nil {
-			log.Debug().Str("id", d.ConfigID).Msg("Failed to get inputs (Gen2)")
-			return inputs
-		}
-
-		// Check for input:0 through input:3 (standard) and input:100+ (add-on)
-		for i := 0; i < 200; i++ {
-			key := fmt.Sprintf("input:%d", i)
-			inp, ok := status[key].(map[string]interface{})
-			if !ok {
-				if i > 4 && i < 100 {
-					i = 99
-				}
-				continue
-			}
-			input := &models.Input{
-				ID:       fmt.Sprintf("%s_input_%d", d.ConfigID, i),
-				Name:     fmt.Sprintf("%s Input %d", d.Name, i),
-				DeviceID: d.ConfigID,
-			}
-			if state, ok := inp["state"].(bool); ok {
-				input.State.State = &state
-			}
-			inputs = append(inputs, input)
-		}
-	} else {
-		// Gen1: query /status and look for inputs
-		status, err := c.gen1Get(d.IP, "status")
-		if err != nil {
-			log.Debug().Str("id", d.ConfigID).Msg("Failed to get inputs (Gen1)")
-			return inputs
-		}
-
-		if inputsArr, ok := status["inputs"].([]interface{}); ok {
-			for i, inp := range inputsArr {
-				if inpMap, ok := inp.(map[string]interface{}); ok {
-					input := &models.Input{
-						ID:       fmt.Sprintf("%s_input_%d", d.ConfigID, i),
-						Name:     fmt.Sprintf("%s Input %d", d.Name, i),
-						DeviceID: d.ConfigID,
-					}
-					if inputVal, ok := inpMap["input"].(float64); ok {
-						state := inputVal > 0
-						input.State.State = &state
-					}
-					inputs = append(inputs, input)
-				}
-			}
-		}
+func onOff(on bool) string {
+	if on {
+		return "on"
 	}
+	return "off"
+}
 
-	return inputs
+// cloneDevice returns a deep copy of a device.
+func cloneDevice(d *models.Device) *models.Device {
+	if d == nil {
+		return nil
+	}
+	cp := *d
+	cp.Channels = append([]models.Channel(nil), d.Channels...)
+	cp.State = cloneState(d.State)
+	return &cp
+}
+
+func cloneState(s models.DeviceState) models.DeviceState {
+	cp := s
+	cp.Temperature = cloneFloat(s.Temperature)
+	cp.Humidity = cloneFloat(s.Humidity)
+	cp.Illuminance = cloneFloat(s.Illuminance)
+	cp.Battery = cloneFloat(s.Battery)
+	cp.Smoke = cloneBoolPtr(s.Smoke)
+	cp.Flood = cloneBoolPtr(s.Flood)
+	return cp
+}
+
+func cloneFloat(f *float64) *float64 {
+	if f == nil {
+		return nil
+	}
+	v := *f
+	return &v
+}
+
+func cloneBoolPtr(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
 }

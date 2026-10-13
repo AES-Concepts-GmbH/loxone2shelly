@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -13,5 +14,9 @@ export default defineConfig({
   define: {
     '__APP_VERSION__': JSON.stringify(process.env.VITE_APP_VERSION || 'dev'),
     '__BUILD_DATE__': JSON.stringify(process.env.VITE_BUILD_DATE || ''),
-  }
+  },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
 })

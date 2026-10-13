@@ -28,9 +28,10 @@ function useSections(): Section[] {
       <div className="space-y-3 text-sm text-gray-300">
         <p>
           <strong className="text-white">Loxone2Shelly</strong> verbindet Loxone Miniserver mit Shelly Geräten.
-          Befehle werden vom Miniserver empfangen (via UDP oder HTTP) und an die Shelly Geräte weitergeleitet.
+          Befehle kommen vom Miniserver per HTTP (Virtueller Ausgang) oder WebSocket und werden an die Shelly Geräte
+          weitergeleitet. Zustandsänderungen der Shellys meldet das Gateway per UDP, HTTP oder MQTT an Loxone zurück.
         </p>
-        <p>Optional kann MQTT als Kommunikationskanal verwendet werden.</p>
+        <p>Optional liefern die Shellys ihre Zustände in Echtzeit über einen MQTT Broker an das Gateway.</p>
         <div className="bg-gray-700/50 rounded-lg p-3 mt-3">
           <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Ablauf</h4>
           <div className="flex items-center gap-2 flex-wrap text-xs">
@@ -87,16 +88,25 @@ function useSections(): Section[] {
           <li>
             Klicke auf <strong className="text-white">Hinzufügen</strong>
           </li>
-          <li>Trage Name, IP-Adresse und UDP-Port ein</li>
-          <li>Aktiviere <strong className="text-white">UDP</strong> und/oder <strong className="text-white">HTTP</strong> je nach Bedarf</li>
+          <li>Trage Name, IP-Adresse und den UDP-Port des Virtuellen UDP-Eingangs ein</li>
+          <li>Aktiviere <strong className="text-white">UDP</strong>, <strong className="text-white">HTTP</strong> und/oder <strong className="text-white">MQTT</strong> als Feedback-Kanal</li>
+          <li>Speichere mit <strong className="text-white">Konfiguration speichern</strong> und prüfe mit <strong className="text-white">UDP-Test senden</strong></li>
         </ol>
 
         <div className="bg-gray-700/50 rounded-lg p-3 mt-3">
           <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Loxone Config Einstellungen</h4>
-          <p className="text-xs text-gray-400">
-            Im Loxone Config einen <strong className="text-white">Virtuellen Ausgang</strong> erstellen,
-            der UDP-Pakete an die IP und den Port von Loxone2Shelly sendet.
-          </p>
+          <ul className="text-xs text-gray-400 list-disc list-inside space-y-1">
+            <li>
+              <strong className="text-white">Virtueller UDP-Eingang</strong> auf dem konfigurierten Port: empfängt das
+              Feedback im Format <span className="font-mono text-white">&lt;loxone_id&gt;/&lt;property&gt;:&lt;wert&gt;</span>
+              (XML-Export unter Einstellungen).
+            </li>
+            <li>
+              <strong className="text-white">Virtueller HTTP-Ausgang</strong> auf das Gateway: sendet Befehle per
+              <span className="font-mono text-white"> PUT /api/devices/&lt;shelly_id&gt;</span>. Ist ein API-Token gesetzt,
+              <span className="font-mono text-white"> ?token=…</span> anhängen.
+            </li>
+          </ul>
         </div>
       </div>
     ),
@@ -108,7 +118,7 @@ function useSections(): Section[] {
     content: (
       <div className="space-y-3 text-sm text-gray-300">
         <p>
-          Mappings verknüpfen Loxone-Eingänge mit Shelly-Geräten:
+          Mappings verknüpfen eine Loxone-ID mit einem Shelly-Gerät (optional einem einzelnen Kanal):
         </p>
         <ol className="list-decimal list-inside space-y-2 ml-1">
           <li>
@@ -117,16 +127,18 @@ function useSections(): Section[] {
           <li>
             Klicke auf <strong className="text-white">Neues Mapping</strong>
           </li>
-          <li>Wähle den Miniserver als Quelle</li>
-          <li>Wähle das Shelly Gerät und den Kanal als Ziel</li>
-          <li>Definiere die Aktion (z.B. Schalten, Dimmen, Rollladen)</li>
+          <li>Vergib eine eindeutige <strong className="text-white">Loxone ID</strong> (ohne Leerzeichen)</li>
+          <li>Wähle das Shelly Gerät, den Typ und bei Mehrkanalgeräten den Kanal</li>
+          <li>Wähle den Miniserver und die Feedback-Kanäle (UDP, HTTP, MQTT)</li>
         </ol>
 
         <div className="bg-gray-700/50 rounded-lg p-3 mt-3">
           <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Beispiel</h4>
           <div className="text-xs space-y-1">
-            <p><span className="text-gray-400">Quelle:</span> <span className="text-white">Miniserver 1 → Licht Büro</span></p>
-            <p><span className="text-gray-400">Ziel:</span> <span className="text-white">Shelly Plus 1 → Kanal 0 → Toggle</span></p>
+            <p><span className="text-gray-400">Loxone ID:</span> <span className="text-white font-mono">buero_licht</span></p>
+            <p><span className="text-gray-400">Shelly:</span> <span className="text-white">Shelly Pro 2PM → Kanal 1</span></p>
+            <p><span className="text-gray-400">Befehl:</span> <span className="text-white font-mono">SET buero_licht ON</span> bzw. <span className="text-white font-mono">PUT /api/devices/&lt;id&gt; {'{'}"on":true,"channel":1{'}'}</span></p>
+            <p><span className="text-gray-400">Feedback:</span> <span className="text-white font-mono">buero_licht/on:1</span>, <span className="text-white font-mono">buero_licht/power:12.5</span></p>
           </div>
         </div>
       </div>
@@ -139,8 +151,9 @@ function useSections(): Section[] {
     content: (
       <div className="space-y-3 text-sm text-gray-300">
         <p>
-          Optional kann ein MQTT Broker für die Kommunikation mit Shelly Geräten verwendet werden.
-          Ein Mosquitto Broker ist bereits im Docker-Setup enthalten.
+          Optional melden die Shelly Geräte ihre Zustände über einen MQTT Broker in Echtzeit an das Gateway
+          (statt nur per Polling). Ein Mosquitto Broker ist im Docker-Setup enthalten. Änderungen an der
+          MQTT-Konfiguration werden ohne Neustart übernommen.
         </p>
 
         <div className="bg-gray-700/50 rounded-lg p-3">
@@ -220,7 +233,7 @@ export default function GuidePanel() {
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white">Anleitung</h2>
         <a
-          href="https://github.com/sbeyeler/loxone2shelly"
+          href="https://github.com/AES-Concepts-GmbH/loxone2shelly"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1 text-xs text-gray-400 hover:text-shelly-blue transition-colors"

@@ -1,41 +1,64 @@
 server:
   port: 8080
   host: "0.0.0.0"
+  # Protects REST API, WebSocket and Web UI. Leave empty only on a trusted network.
+  # Can also be set via the L2S_API_TOKEN environment variable.
+  api_token: ""
+  # Protects /api/webhook (Shelly action URLs must append &token=<webhook_token>).
+  webhook_token: ""
+  # Browser origins allowed to call the API (empty = same origin only).
+  cors_origins: []
+  # Backup directory (empty = "backups" folder next to this file).
+  backup_dir: ""
 
 shelly:
-  poll_interval: 10
+  poll_interval: 10 # seconds; applied immediately when changed via API/UI
   devices:
     # - id: "shelly1"
     #   name: "Büro Licht"
     #   ip: "192.168.1.50"
     #   generation: 2
     #   mqtt_id: "shellyplus1-aabbccddee"  # optional: MQTT device ID (defaults to id)
+    #   username: "admin"                  # optional: device login (Gen2+ digest, Gen1 basic)
+    #   password: ""
 
 loxone:
   miniservers:
     # - id: "ms1"
     #   name: "Miniserver 1"
     #   ip: "192.168.1.10"
-    #   port: 7777
+    #   port: 7777                      # UDP port of the Virtual UDP Input
     #   udp_enabled: true
     #   http_enabled: false
-    #   http_url: ""
+    #   http_url: ""                    # default http://<ip>; use https://... for Gen2 Miniservers
     #   http_user: ""
     #   http_password: ""
+    #   http_insecure_tls: false        # true to accept the Miniserver's self-signed certificate
     #   mqtt_enabled: false
     #   mqtt_topic_prefix: "loxone2shelly"  # topic: <prefix>/<loxone_id>/<property>
-    #   send_all: false
+    #   send_all: false                 # also receive updates of mappings without miniserver_id
 
 mqtt:
   enabled: false
-  broker: "tcp://mosquitto:1883"  # Docker-Servicename; "tcp://localhost:1883" wenn ausserhalb Docker
+  broker: "tcp://mosquitto:1883" # Docker service name; "tcp://localhost:1883" outside Docker
   username: ""
   password: ""
   client_id: "loxone2shelly"
   topic_prefix: "shellies"
 
 logging:
-  level: "info"
-  format: "json"
+  level: "info"   # debug | info | warn | error (applied immediately when changed via API/UI)
+  format: "json"  # json | console
 
 mappings: []
+  # - id: "mapping1"
+  #   name: "Büro Licht"
+  #   loxone_id: "buero_licht"
+  #   shelly_id: "shelly1"
+  #   shelly_type: "switch"      # switch | light | dimmer | roller | rgb | rgbw | input | sensor | meter
+  #   enabled: true
+  #   channel: 1                 # optional: single channel of a multi-channel device
+  #   feedback_udp: true
+  #   feedback_http: true
+  #   feedback_mqtt: true
+  #   miniserver_id: "ms1"

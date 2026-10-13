@@ -1,6 +1,15 @@
+# Local / home-lab setup: gateway + Mosquitto broker + MQTTX web client.
+#
+# Security notes:
+# - Set L2S_API_TOKEN (or server.api_token in configs/config.yaml) to protect the
+#   gateway API and Web UI. Without it anyone on the network can control devices.
+# - The bundled Mosquitto allows anonymous access for convenience on a trusted LAN.
+#   For anything else set a password file in mosquitto/config/mosquitto.conf.
+# - mqttx-web is a debugging aid; remove the service if you do not need it.
+
 services:
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.0
     container_name: mosquitto
     restart: unless-stopped
     ports:
@@ -14,7 +23,7 @@ services:
       - TZ=Europe/Zurich
 
   mqttx-web:
-    image: emqx/mqttx-web:latest
+    image: emqx/mqttx-web:v1.13.1
     container_name: mqttx-web
     restart: unless-stopped
     ports:
@@ -24,14 +33,19 @@ services:
 
   loxone2shelly:
     build: .
+    image: loxone2shelly:local
     container_name: loxone2shelly
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
+      # Holds config.yaml and the backups/ folder
       - ./configs:/app/configs
     environment:
       - TZ=Europe/Zurich
+      # - L2S_API_TOKEN=change-me
+    # mDNS device discovery needs host networking; uncomment and drop "ports" above.
+    # network_mode: host
     depends_on:
       - mosquitto
 

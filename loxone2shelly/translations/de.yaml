@@ -2,3 +2,6 @@ configuration:
   log_level:
     name: Log-Level
     description: Detailgrad der Protokollierung
+  api_token:
+    name: API-Token
+    description: Schützt Web-UI und REST-API. Leer lassen, um ohne Authentifizierung zu arbeiten (nur in vertrauenswürdigen Netzen).

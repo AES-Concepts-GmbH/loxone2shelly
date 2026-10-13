@@ -4,10 +4,10 @@ package models
 type Device struct {
 	ID           string       `json:"id"`
 	Name         string       `json:"name"`
-	Type         string       `json:"type"`          // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor", "meter"
-	Model        string       `json:"model"`         // e.g. "SNSW-001X16EU" (Shelly Plus 1)
+	Type         string       `json:"type"`  // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "sensor", "meter"
+	Model        string       `json:"model"` // e.g. "SNSW-001X16EU" (Shelly Plus 1)
 	IP           string       `json:"ip"`
-	Generation   int          `json:"generation"`    // 1 or 2+
+	Generation   int          `json:"generation"` // 1 or 2+
 	FirmwareVer  string       `json:"firmware_ver"`
 	State        DeviceState  `json:"state"`
 	Capabilities Capabilities `json:"capabilities,omitempty"`
@@ -52,7 +52,7 @@ type DeviceState struct {
 // Channel represents a single channel in a multi-channel device
 type Channel struct {
 	Index      int     `json:"index"`
-	Type       string  `json:"type"`                // "switch", "light", "cover"
+	Type       string  `json:"type"` // "switch", "light", "cover"
 	On         bool    `json:"on"`
 	Brightness float64 `json:"brightness,omitempty"`
 	Position   int     `json:"position,omitempty"`
@@ -91,4 +91,10 @@ type DeviceCommand struct {
 	White      *int     `json:"white,omitempty"`
 	Position   *int     `json:"position,omitempty"`
 	Channel    *int     `json:"channel,omitempty"` // Target channel for multi-channel devices
+}
+
+// Prop is a single Loxone feedback property (name/value pair).
+type Prop struct {
+	Name  string
+	Value interface{}
 }

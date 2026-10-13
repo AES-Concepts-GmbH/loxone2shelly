@@ -4,6 +4,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
+
+	"github.com/rs/zerolog/log"
+	"github.com/sbeyeler/loxone2shelly/internal/config"
 )
 
 //go:embed swagger-ui.html
@@ -12,7 +15,9 @@ var swaggerUIHTML string
 // SwaggerUI serves the Swagger UI HTML page
 func (h *Handlers) SwaggerUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(swaggerUIHTML))
+	if _, err := w.Write([]byte(swaggerUIHTML)); err != nil {
+		log.Debug().Err(err).Msg("Failed to write swagger UI")
+	}
 }
 
 // SwaggerJSON serves the OpenAPI specification
@@ -22,16 +27,46 @@ func (h *Handlers) SwaggerJSON(w http.ResponseWriter, r *http.Request) {
 		"info": map[string]interface{}{
 			"title":       "Loxone2Shelly API",
 			"description": "REST API for the Loxone2Shelly Gateway. Bridges Loxone Miniserver with Shelly smart home devices.",
-			"version":     "1.0.0",
+			"version":     config.GetVersion(),
 		},
 		"servers": []map[string]interface{}{
 			{"url": "/", "description": "Current server"},
 		},
+		"components": map[string]interface{}{
+			"securitySchemes": map[string]interface{}{
+				"bearerAuth": map[string]interface{}{"type": "http", "scheme": "bearer"},
+				"apiKey":     map[string]interface{}{"type": "apiKey", "in": "header", "name": "X-API-Key"},
+				"queryToken": map[string]interface{}{"type": "apiKey", "in": "query", "name": "token"},
+			},
+		},
+		"security": []map[string]interface{}{{"bearerAuth": []string{}}, {"apiKey": []string{}}, {"queryToken": []string{}}},
 		"paths": map[string]interface{}{
+			"/api/webhook": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Shelly action-URL webhook",
+					"description": "Called by Shelly devices (Actions / I/O URL actions). Unauthenticated unless server.webhook_token is set.",
+					"tags":        []string{"Webhook"},
+					"security":    []map[string]interface{}{},
+					"parameters": []map[string]interface{}{
+						{"name": "device_id", "in": "query", "required": true, "schema": map[string]string{"type": "string"}},
+						{"name": "event", "in": "query", "required": true, "schema": map[string]interface{}{"type": "string", "enum": []string{"single_push", "double_push", "triple_push", "long_push", "btn_down", "btn_up", "toggle", "on", "off"}}},
+						{"name": "channel", "in": "query", "schema": map[string]string{"type": "integer"}},
+						{"name": "value", "in": "query", "schema": map[string]string{"type": "string"}},
+						{"name": "token", "in": "query", "schema": map[string]string{"type": "string"}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "Accepted"},
+						"400": map[string]interface{}{"description": "Invalid parameters"},
+						"401": map[string]interface{}{"description": "Invalid webhook token"},
+						"404": map[string]interface{}{"description": "Unknown device"},
+					},
+				},
+			},
 			"/api/health": map[string]interface{}{
 				"get": map[string]interface{}{
-					"summary": "Health check",
-					"tags":    []string{"System"},
+					"summary":  "Health check",
+					"tags":     []string{"System"},
+					"security": []map[string]interface{}{},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{"description": "OK"},
 					},
@@ -330,5 +365,7 @@ func (h *Handlers) SwaggerJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(spec)
+	if err := json.NewEncoder(w).Encode(spec); err != nil {
+		log.Debug().Err(err).Msg("Failed to write swagger spec")
+	}
 }
