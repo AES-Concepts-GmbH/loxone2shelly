@@ -73,7 +73,20 @@ func newTestServer(t *testing.T, yaml string) (*httptest.Server, *Deps) {
 	t.Cleanup(s.wsHub.Stop)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
+	testServers.Store(ts, s)
 	return ts, &deps
+}
+
+// testServers maps test HTTP servers to their API server so tests can reach the hub.
+var testServers sync.Map
+
+func serverHubFor(t *testing.T, ts *httptest.Server) *WebSocketHub {
+	t.Helper()
+	v, ok := testServers.Load(ts)
+	if !ok {
+		t.Fatal("unknown test server")
+	}
+	return v.(*Server).wsHub
 }
 
 func do(t *testing.T, method, url, body string, headers map[string]string) (*http.Response, string) {
