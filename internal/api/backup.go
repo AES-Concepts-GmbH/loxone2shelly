@@ -65,6 +65,19 @@ func backupFilePath(dir, id string) (string, bool) {
 	return filepath.Join(dir, id+".json"), true
 }
 
+// uniqueBackupID returns base, or base-2, base-3, ... if a backup with that id
+// already exists, so two backups within the same second never overwrite each other.
+func uniqueBackupID(dir, base string) string {
+	id := base
+	for i := 2; ; i++ {
+		path, _ := backupFilePath(dir, id)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return id
+		}
+		id = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
 func snapshotConfig(cfg *config.Config) BackupConfig {
 	return BackupConfig{
 		Server:   cfg.Server,
@@ -150,7 +163,7 @@ func (h *Handlers) CreateBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	id := now.Format("20060102-150405")
+	id := uniqueBackupID(dir, now.Format("20060102-150405"))
 
 	backup := BackupFile{
 		Meta: BackupFileMeta{
@@ -223,7 +236,7 @@ func (h *Handlers) UploadBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ = json.MarshalIndent(bf, "", "  ")
 
-	id := fmt.Sprintf("upload-%s", time.Now().Format("20060102-150405"))
+	id := uniqueBackupID(dir, fmt.Sprintf("upload-%s", time.Now().Format("20060102-150405")))
 	path, _ := backupFilePath(dir, id)
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		jsonError(w, http.StatusInternalServerError, "failed to save uploaded backup")
