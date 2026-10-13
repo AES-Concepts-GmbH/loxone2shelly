@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Wifi, Plus, CheckCircle, XCircle, Loader2, Search } from 'lucide-react';
 // CheckCircle and XCircle used in testResult display below
 import * as api from '../services/api';
-import type { ShellyDeviceConfig } from '../types';
+import type { DiscoveredDevice } from '../types';
 
 interface DeviceSetupProps {
   onComplete: () => void;
@@ -19,7 +19,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
     message: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [discoveredDevices, setDiscoveredDevices] = useState<ShellyDeviceConfig[]>([]);
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredDevice[]>([]);
 
   const handleAdd = async () => {
     if (!ip) return;
@@ -42,7 +42,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
       const devices = await api.discoverShelly();
       setDiscoveredDevices(devices);
       if (devices.length === 0) {
-        setError('Keine Shelly Geräte im Netzwerk gefunden.');
+        setError('Keine Shelly Geräte per mDNS gefunden. Discovery benötigt Host-Netzwerk (Docker: network_mode: host) – alternativ IP manuell eingeben.');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Discovery fehlgeschlagen');
@@ -51,9 +51,14 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
     }
   };
 
-  const handleAddDiscovered = async (device: ShellyDeviceConfig) => {
+  const handleAddDiscovered = async (device: DiscoveredDevice) => {
     try {
-      await api.addShelly(device);
+      await api.addShelly({
+        id: device.id.replace(/[^A-Za-z0-9_.-]/g, '-'),
+        name: device.model ? `${device.model} (${device.ip})` : device.name,
+        ip: device.ip,
+        generation: device.gen >= 2 ? 2 : 1,
+      });
       onComplete();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fehler beim Hinzufügen');
@@ -183,7 +188,7 @@ export default function DeviceSetup({ onComplete }: DeviceSetupProps) {
                   <div>
                     <span className="text-sm text-white">{device.name}</span>
                     <p className="text-xs text-gray-400">
-                      {device.ip} &middot; Gen {device.generation}
+                      {device.ip} &middot; Gen {device.gen}
                     </p>
                   </div>
                   <button

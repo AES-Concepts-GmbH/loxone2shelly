@@ -1,4 +1,7 @@
 configuration:
   log_level:
-    name: Log Level
-    description: Logging verbosity level
+    name: Log level
+    description: Verbosity of the gateway log
+  api_token:
+    name: API token
+    description: Protects the Web UI and REST API. Leave empty to run without authentication (trusted networks only).

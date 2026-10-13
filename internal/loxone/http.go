@@ -20,12 +20,12 @@ type httpTarget struct {
 	password string
 	sendAll  bool
 	name     string
+	client   *http.Client
 }
 
 // HTTPSender sends status updates to one or more Loxone Miniservers via HTTP
 type HTTPSender struct {
 	targets map[string]*httpTarget // key = MiniserverConfig.ID
-	client  *http.Client
 	mu      sync.Mutex
 }
 
@@ -33,13 +33,15 @@ type HTTPSender struct {
 func NewHTTPSender() *HTTPSender {
 	return &HTTPSender{
 		targets: make(map[string]*httpTarget),
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		},
 	}
+}
+
+func newHTTPClient(insecure bool) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit opt-in per miniserver
+	}
+	return &http.Client{Timeout: 5 * time.Second, Transport: transport}
 }
 
 // Configure sets up or reconfigures all HTTP targets based on current miniserver config.
@@ -47,7 +49,9 @@ func (s *HTTPSender) Configure(miniservers []config.MiniserverConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clear existing targets
+	for _, t := range s.targets {
+		t.client.CloseIdleConnections()
+	}
 	s.targets = make(map[string]*httpTarget)
 
 	for _, ms := range miniservers {
@@ -64,14 +68,15 @@ func (s *HTTPSender) Configure(miniservers []config.MiniserverConfig) {
 		}
 
 		s.targets[ms.ID] = &httpTarget{
-			baseURL:  baseURL,
+			baseURL:  strings.TrimRight(baseURL, "/"),
 			user:     ms.HTTPUser,
 			password: ms.HTTPPassword,
 			sendAll:  ms.SendAll,
 			name:     ms.Name,
+			client:   newHTTPClient(ms.HTTPInsecureTLS),
 		}
 
-		log.Info().Str("id", ms.ID).Str("name", ms.Name).Str("url", baseURL).Msg("HTTP feedback configured for miniserver")
+		log.Info().Str("id", ms.ID).Str("name", ms.Name).Str("url", baseURL).Bool("insecure_tls", ms.HTTPInsecureTLS).Msg("HTTP feedback configured for miniserver")
 	}
 }
 
@@ -95,7 +100,6 @@ func (s *HTTPSender) HasSendAll() bool {
 }
 
 // Send sends a single property update to a specific Miniserver via HTTP.
-// Uses Loxone Virtual HTTP Input format: GET /dev/sps/io/<loxone_id>/<value>
 func (s *HTTPSender) Send(miniserverID, loxoneID, property string, value interface{}) {
 	s.mu.Lock()
 	t, ok := s.targets[miniserverID]
@@ -124,14 +128,21 @@ func (s *HTTPSender) SendToAll(loxoneID, property string, value interface{}) {
 	}
 }
 
-// sendHTTP performs the actual HTTP request to the Loxone Miniserver.
-// Format: GET /dev/sps/io/<loxone_id>_<property>/<value>
-func (s *HTTPSender) sendHTTP(t *httpTarget, loxoneID, property string, value interface{}) {
+// FeedbackURL builds the Loxone Virtual Input URL for a property update.
+// Format: <base>/dev/sps/io/<loxone_id>_<property>/<value>
+func FeedbackURL(baseURL, loxoneID, property string, value interface{}) string {
 	viName := fmt.Sprintf("%s_%s", loxoneID, property)
-	base := strings.TrimRight(t.baseURL, "/")
-	reqURL := fmt.Sprintf("%s/dev/sps/io/%s/%v", base, url.PathEscape(viName), value)
+	return fmt.Sprintf("%s/dev/sps/io/%s/%s",
+		strings.TrimRight(baseURL, "/"),
+		url.PathEscape(viName),
+		url.PathEscape(fmt.Sprintf("%v", value)))
+}
 
-	req, err := http.NewRequest("GET", reqURL, nil)
+// sendHTTP performs the actual HTTP request to the Loxone Miniserver.
+func (s *HTTPSender) sendHTTP(t *httpTarget, loxoneID, property string, value interface{}) {
+	reqURL := FeedbackURL(t.baseURL, loxoneID, property, value)
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		log.Warn().Err(err).Str("miniserver", t.name).Str("url", reqURL).Msg("Failed to create HTTP request")
 		return
@@ -141,12 +152,17 @@ func (s *HTTPSender) sendHTTP(t *httpTarget, loxoneID, property string, value in
 		req.SetBasicAuth(t.user, t.password)
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := t.client.Do(req)
 	if err != nil {
 		log.Warn().Err(err).Str("miniserver", t.name).Str("url", reqURL).Msg("Failed to send HTTP feedback")
 		return
 	}
 	resp.Body.Close()
 
-	log.Info().Str("miniserver", t.name).Str("vi", viName).Interface("value", value).Int("status", resp.StatusCode).Msg("HTTP feedback sent")
+	if resp.StatusCode >= 400 {
+		log.Warn().Str("miniserver", t.name).Str("url", reqURL).Int("status", resp.StatusCode).Msg("Miniserver rejected HTTP feedback")
+		return
+	}
+
+	log.Debug().Str("miniserver", t.name).Str("loxone_id", loxoneID).Str("property", property).Interface("value", value).Int("status", resp.StatusCode).Msg("HTTP feedback sent")
 }

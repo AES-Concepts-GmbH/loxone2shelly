@@ -1,10 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useShellyDevices } from './hooks/useShellyDevices';
 import Dashboard from './components/Dashboard';
 import DeviceSetup from './components/DeviceSetup';
+import LoginScreen from './components/LoginScreen';
 import * as api from './services/api';
 
+type AuthState = 'checking' | 'required' | 'ok';
+
 export default function App() {
+  const [auth, setAuth] = useState<AuthState>('checking');
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [hasDevices, setHasDevices] = useState<boolean | null>(null);
   const [checkingSetup, setCheckingSetup] = useState(true);
 
@@ -17,34 +22,87 @@ export default function App() {
     isConnected,
     refresh,
     setDeviceState,
-  } = useShellyDevices();
+  } = useShellyDevices(auth === 'ok');
+
+  // Determine whether the server needs a token and whether we have a valid one.
+  useEffect(() => {
+    let cancelled = false;
+    async function checkAuth() {
+      try {
+        const health = await api.getHealth();
+        if (cancelled) return;
+        if (!health.auth_required) {
+          setAuth('ok');
+          return;
+        }
+        if (!api.getToken()) {
+          setAuth('required');
+          return;
+        }
+        await api.getDevices();
+        if (!cancelled) setAuth('ok');
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof api.ApiError && err.status === 401) {
+          setAuth('required');
+        } else {
+          // Server unreachable: show the dashboard so the error banner is visible.
+          setAuth('ok');
+        }
+      }
+    }
+    checkAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Any 401 later in the session sends the user back to the login screen.
+  useEffect(() => {
+    const handler = () => {
+      api.setToken('');
+      setAuthMessage('Sitzung abgelaufen oder Token ungültig.');
+      setAuth('required');
+    };
+    window.addEventListener(api.UNAUTHORIZED_EVENT, handler);
+    return () => window.removeEventListener(api.UNAUTHORIZED_EVENT, handler);
+  }, []);
 
   // Check if any Shelly devices are configured
   useEffect(() => {
+    if (auth !== 'ok') return;
+    let cancelled = false;
     async function checkSetup() {
       try {
         const config = await api.getConfig();
-        const configured =
-          config.shelly?.devices && config.shelly.devices.length > 0;
-        setHasDevices(!!configured);
+        if (cancelled) return;
+        setHasDevices(!!(config.shelly?.devices && config.shelly.devices.length > 0));
       } catch {
-        // If API not reachable, show dashboard anyway
-        setHasDevices(true);
+        if (!cancelled) setHasDevices(true);
       } finally {
-        setCheckingSetup(false);
+        if (!cancelled) setCheckingSetup(false);
       }
     }
     checkSetup();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
 
-  // Also update hasDevices when devices are loaded
   useEffect(() => {
-    if (devices.length > 0) {
-      setHasDevices(true);
-    }
+    if (devices.length > 0) setHasDevices(true);
   }, [devices]);
 
-  if (checkingSetup) {
+  const onLogin = useCallback(() => {
+    setAuthMessage(null);
+    setAuth('ok');
+  }, []);
+
+  if (auth === 'required') {
+    return <LoginScreen onSuccess={onLogin} message={authMessage} />;
+  }
+
+  if (auth === 'checking' || checkingSetup) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
         <div className="text-center">

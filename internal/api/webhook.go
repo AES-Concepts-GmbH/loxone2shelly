@@ -1,57 +1,81 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/rs/zerolog/log"
+	"github.com/sbeyeler/loxone2shelly/internal/config"
+	"github.com/sbeyeler/loxone2shelly/internal/loxone"
 	"github.com/sbeyeler/loxone2shelly/internal/models"
+	"github.com/sbeyeler/loxone2shelly/internal/shelly"
 )
 
-// Webhook empfängt HTTP-Meldungen von Shelly-Geräten (Action-URLs).
+// knownWebhookEvents lists the event names Shelly action URLs may report.
+var knownWebhookEvents = map[string]bool{
+	"single_push": true, "double_push": true, "triple_push": true, "long_push": true,
+	"btn_down": true, "btn_up": true, "toggle": true, "on": true, "off": true,
+	"open": true, "close": true, "stop": true,
+}
+
+// Webhook receives HTTP notifications from Shelly devices (action URLs).
 //
-// Shelly-Geräte können so konfiguriert werden, dass sie bei Ereignissen
-// (z.B. Button-Druck) einen HTTP GET-Request an diesen Endpoint senden.
+// URL format:
 //
-// URL-Format:
+//	GET /api/webhook?device_id=<id>&event=<event>&channel=<n>&value=<v>[&token=<webhook_token>]
 //
-//	GET /api/webhook?device_id=<id>&event=<event>&channel=<n>&value=<v>
-//
-// Parameter:
-//   - device_id (Pflicht): Shelly-Geräte-ID wie in der Konfiguration
-//   - event (Pflicht): Ereignistyp, z.B. "single_push", "double_push", "long_push",
-//     "btn_down", "btn_up", "toggle", "on", "off"
-//   - channel (optional): Kanal-Nummer bei Mehrkanalgeräten (Standard: 0)
-//   - value (optional): Zusätzlicher Wert (z.B. Helligkeit, Position)
-//
-// Beispiel-Action-URL in Shelly-Konfiguration:
-//
-//	http://<gateway>:8080/api/webhook?device_id=shelly1&event=single_push&channel=0
+// Parameters:
+//   - device_id (required): Shelly device ID as configured
+//   - event (required): e.g. "single_push", "double_push", "long_push", "btn_down", "btn_up", "toggle", "on", "off"
+//   - channel (optional): channel index for multi-channel devices (default 0)
+//   - value (optional): additional value (e.g. brightness, position)
+//   - token (required when server.webhook_token is configured)
 func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
+	if expected := config.GetServer().WebhookToken; expected != "" {
+		if !tokenMatches(q.Get("token"), expected) {
+			jsonError(w, http.StatusUnauthorized, "invalid webhook token")
+			return
+		}
+	}
+
 	deviceID := q.Get("device_id")
 	if deviceID == "" {
-		jsonError(w, http.StatusBadRequest, "device_id ist erforderlich")
+		jsonError(w, http.StatusBadRequest, "device_id is required")
+		return
+	}
+	if !h.deps.Shelly.HasDevice(deviceID) {
+		jsonError(w, http.StatusNotFound, "unknown device_id")
 		return
 	}
 
 	event := q.Get("event")
 	if event == "" {
-		jsonError(w, http.StatusBadRequest, "event ist erforderlich")
+		jsonError(w, http.StatusBadRequest, "event is required")
+		return
+	}
+	if len(event) > 32 || !knownWebhookEvents[event] {
+		jsonError(w, http.StatusBadRequest, "unknown event")
 		return
 	}
 
 	channel := 0
 	if ch := q.Get("channel"); ch != "" {
-		if v, err := strconv.Atoi(ch); err == nil {
-			channel = v
+		v, err := strconv.Atoi(ch)
+		if err != nil || v < 0 || v > 15 {
+			jsonError(w, http.StatusBadRequest, "channel must be between 0 and 15")
+			return
 		}
+		channel = v
 	}
 
 	value := q.Get("value")
+	if len(value) > 64 {
+		jsonError(w, http.StatusBadRequest, "value too long")
+		return
+	}
 
 	log.Info().
 		Str("device_id", deviceID).
@@ -59,94 +83,39 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 		Int("channel", channel).
 		Str("value", value).
 		Str("remote", r.RemoteAddr).
-		Msg("Webhook empfangen")
+		Msg("Webhook received")
 
-	// Mapping für dieses Gerät suchen
-	mapping := h.mappingManager.GetByShellyID(deviceID)
-	if mapping == nil {
-		log.Warn().Str("device_id", deviceID).Msg("Kein Mapping für Webhook-Gerät gefunden")
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"status":  "ok",
-			"warning": "kein Mapping gefunden",
-		})
-		return
-	}
+	props := loxone.WebhookProps(event, value)
+	mappings := h.deps.Mappings.GetByShellyID(deviceID)
 
-	// Feedback-Properties erstellen
-	type feedbackProp struct {
-		name  string
-		value interface{}
-	}
-
-	var props []feedbackProp
-
-	// Event-Typ weiterleiten
-	props = append(props, feedbackProp{"event", event})
-
-	// Event-spezifische Werte
-	switch event {
-	case "on":
-		props = append(props, feedbackProp{"on", 1})
-	case "off":
-		props = append(props, feedbackProp{"on", 0})
-	case "toggle":
-		props = append(props, feedbackProp{"toggle", 1})
-	case "single_push":
-		props = append(props, feedbackProp{"push", 1})
-	case "double_push":
-		props = append(props, feedbackProp{"push", 2})
-	case "long_push":
-		props = append(props, feedbackProp{"push", 3})
-	case "btn_down":
-		props = append(props, feedbackProp{"btn", 1})
-	case "btn_up":
-		props = append(props, feedbackProp{"btn", 0})
-	}
-
-	// Zusätzlichen Wert weiterleiten (falls vorhanden)
-	if value != "" {
-		props = append(props, feedbackProp{"value", value})
-	}
-
-	// Kanal als Suffix anfügen bei Mehrkanalgeräten
-	loxoneID := mapping.LoxoneID
-	if channel > 0 {
-		loxoneID = fmt.Sprintf("%s_%d", mapping.LoxoneID, channel)
-	}
-
-	miniserverID := mapping.MiniserverID
-
-	for _, prop := range props {
-		// UDP-Feedback
-		if mapping.ShouldFeedbackUDP() && h.udpSender.IsEnabled() {
-			if miniserverID != "" {
-				h.udpSender.Send(miniserverID, loxoneID, prop.name, prop.value)
-			} else {
-				h.udpSender.SendToAll(loxoneID, prop.name, prop.value)
-			}
+	sent := 0
+	var loxoneID string
+	for i := range mappings {
+		m := &mappings[i]
+		target := ""
+		switch {
+		case m.Channel != nil && *m.Channel == channel:
+			target = m.LoxoneID
+		case m.Channel == nil && channel == 0:
+			target = m.LoxoneID
+		case m.Channel == nil:
+			// Device-level mapping on a multi-channel device: suffix the channel.
+			target = fmt.Sprintf("%s_%d", m.LoxoneID, channel)
+		default:
+			continue
 		}
-
-		// HTTP-Feedback
-		if mapping.ShouldFeedbackHTTP() && h.httpSender.IsEnabled() {
-			if miniserverID != "" {
-				h.httpSender.Send(miniserverID, loxoneID, prop.name, prop.value)
-			} else {
-				h.httpSender.SendToAll(loxoneID, prop.name, prop.value)
-			}
+		if loxoneID == "" {
+			loxoneID = target
 		}
-
-		// MQTT-Feedback
-		if mapping.ShouldFeedbackMQTT() && h.mqttSender != nil && h.mqttSender.IsEnabled() {
-			if miniserverID != "" {
-				h.mqttSender.Send(miniserverID, loxoneID, prop.name, prop.value)
-			} else {
-				h.mqttSender.SendToAll(loxoneID, prop.name, prop.value)
-			}
-		}
+		h.deps.Dispatcher.SendToMapping(m, target, props)
+		sent++
 	}
 
-	// WebSocket-Broadcast für die Web-UI
-	wsMsg := models.WebSocketMessage{
+	// Mirror the event as an input event so cached inputs and UI stay in sync.
+	ch := channel
+	h.deps.Shelly.PushEvent(eventFromWebhook(deviceID, &ch, event, value))
+
+	h.wsHub.Broadcast(models.WebSocketMessage{
 		Type: "webhook_event",
 		Payload: map[string]interface{}{
 			"device_id": deviceID,
@@ -155,14 +124,37 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 			"value":     value,
 			"loxone_id": loxoneID,
 		},
-	}
-	if data, err := json.Marshal(wsMsg); err == nil {
-		select {
-		case h.wsHub.broadcast <- data:
-		default:
-			log.Warn().Msg("WebSocket-Broadcast-Kanal voll")
-		}
+	})
+
+	if sent == 0 {
+		log.Warn().Str("device_id", deviceID).Msg("No mapping found for webhook device")
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "ok",
+			"warning": "no mapping found",
+		})
+		return
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "ok", "mappings": sent})
+}
+
+// eventFromWebhook converts a webhook call into an input event for UI clients.
+// Loxone feedback is handled separately by the webhook handler, so Props stay empty.
+func eventFromWebhook(deviceID string, channel *int, event, value string) shelly.Event {
+	state := map[string]interface{}{"event": event}
+	if value != "" {
+		state["value"] = value
+	}
+	switch event {
+	case "btn_down":
+		state["input"] = true
+	case "btn_up":
+		state["input"] = false
+	}
+	return shelly.Event{
+		DeviceID: deviceID,
+		Type:     "input",
+		Channel:  channel,
+		State:    state,
+	}
 }

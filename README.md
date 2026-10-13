@@ -1,80 +1,106 @@
 # Loxone2Shelly Gateway
 
-Gateway zur bidirektionalen Kommunikation zwischen **Loxone Miniserver** und **Shelly-Geräten** (Gen1 & Gen2+).
+Gateway zur bidirektionalen Kommunikation zwischen **Loxone Miniserver** und **Shelly-Geräten** (Gen1 und Gen2+).
+
+[![CI](https://github.com/AES-Concepts-GmbH/loxone2shelly/actions/workflows/ci.yml/badge.svg)](https://github.com/AES-Concepts-GmbH/loxone2shelly/actions/workflows/ci.yml)
 
 ## Features
 
 - Bidirektionale Steuerung: Loxone steuert Shelly-Geräte und erhält Status-Feedback
-- Unterstützung für Shelly Gen1 und Gen2+ Geräte
-- Gerätetypen: Switch, Dimmer, Light, Roller/Cover, RGB, RGBW
-- Input-Events: single_push, double_push, long_push
-- Loxone-Feedback via UDP und/oder HTTP
-- Multi-Miniserver Support
-- Web-basierte Konfigurationsoberfläche
-- Mapping Import/Export (JSON)
-- Backup & Restore der Konfiguration
-- Loxone Virtual Input/Output XML-Export
-- Docker & Home Assistant Add-on Support
-- Swagger API-Dokumentation
+- Shelly Gen1 und Gen2+ (inkl. Gen3/Gen4), optional mit Geräte-Passwort (Digest/Basic Auth)
+- Gerätetypen: Switch, Dimmer, Light, Roller/Cover, RGB, RGBW, Sensoren, Energiezähler, Inputs
+- Mehrkanalgeräte (Pro 2PM, Pro 4PM, …) mit Mappings pro Kanal
+- Input-Events über Shelly Action-URLs (Webhook) oder MQTT: single/double/triple/long push
+- Feedback an Loxone via UDP, HTTP und/oder MQTT, mehrere Miniserver
+- Statusänderungen per Polling oder in Echtzeit über MQTT (Shelly → Broker → Gateway)
+- Web-Oberfläche: Geräte, Eingänge, Webhooks, Mappings, Einstellungen, Logs
+- Konfigurationsänderungen werden ohne Neustart übernommen (Geräte, Poll-Intervall, MQTT, Log-Level)
+- Optionaler API-Token für API, WebSocket und Web-UI; separater Webhook-Token
+- Backup & Restore, Mapping-Import/-Export, Loxone Virtual Input/Output XML-Export
+- Docker und Home Assistant Add-on, Swagger-Dokumentation unter `/api/swagger`
 
 ## Architektur
 
 ```
-Loxone Miniserver ←→ Loxone2Shelly Gateway ←→ Shelly-Geräte
-       ↑                     ↑                      ↑
-  UDP/HTTP Feedback      Web UI (:8080)        HTTP/RPC API
+Loxone Miniserver  <--UDP/HTTP/MQTT Feedback--  Loxone2Shelly Gateway  --HTTP/RPC-->  Shelly-Geräte
+                   --HTTP/WebSocket Befehle-->        Web UI (:8080)     <--Webhook/MQTT--
 ```
 
 ## Schnellstart
 
-### Docker
+### Docker Compose
 
 ```bash
-git clone https://github.com/stefanbeyeler/loxone2shelly.git
+git clone https://github.com/AES-Concepts-GmbH/loxone2shelly.git
 cd loxone2shelly
 cp configs/config.example.yaml configs/config.yaml
-docker-compose up -d
+# Empfohlen: API-Token setzen (configs/config.yaml -> server.api_token oder L2S_API_TOKEN)
+docker compose up -d
 ```
 
-Web-UI öffnen: http://localhost:8080
+Web-UI: http://localhost:8080. Das Verzeichnis `configs/` enthält die Konfiguration und den Ordner `backups/`.
+
+Für die automatische Gerätesuche (mDNS) braucht der Container Host-Netzwerk (`network_mode: host`, siehe Kommentar in `docker-compose.yml`).
 
 ### Home Assistant Add-on
 
-1. Repository hinzufügen: `https://github.com/stefanbeyeler/loxone2shelly`
-2. Add-on "Loxone2Shelly Gateway" installieren
-3. Add-on starten und Web-UI öffnen
+1. Einstellungen → Add-ons → Add-on Store → ⋮ → Repositories: `https://github.com/AES-Concepts-GmbH/loxone2shelly` hinzufügen
+2. Add-on "Loxone2Shelly Gateway" installieren, optional das API-Token in den Add-on-Optionen setzen
+3. Add-on starten und die Web-UI über die Seitenleiste (Ingress) öffnen
+
+Die Konfiguration liegt im Add-on-Config-Verzeichnis (`/config/config.yaml`), Backups in `/config/backups/`. Die Add-on-Images werden durch den Workflow `addon.yml` bei Versions-Tags nach `ghcr.io` veröffentlicht.
 
 ### Lokal (Entwicklung)
 
 ```bash
 # Backend
-go build -o gateway ./cmd/gateway
+go build -ldflags "-X main.version=$(cat VERSION)" -o gateway ./cmd/gateway
 ./gateway -config configs/config.yaml
 
-# Frontend
+# Frontend (Dev-Server mit Proxy auf :8080)
 cd web
-npm install
+npm ci
 npm run dev
+```
+
+Qualitätssicherung lokal:
+
+```bash
+gofmt -l . && go vet ./cmd/... ./internal/... && go test -race ./cmd/... ./internal/...
+cd web && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
 ## Konfiguration
 
-### Shelly-Geräte
+Alle Einstellungen lassen sich über die Web-UI pflegen. Die Datei `configs/config.example.yaml` dokumentiert jede Option. Gespeicherte Passwörter liefert die API nur maskiert (`********`) zurück; unveränderte Felder behalten beim Speichern ihren Wert.
 
-Geräte können über die Web-UI oder die `config.yaml` hinzugefügt werden:
+### Server und Sicherheit
+
+```yaml
+server:
+  port: 8080
+  host: "0.0.0.0"
+  api_token: ""       # schützt API, WebSocket und UI (auch per L2S_API_TOKEN setzbar)
+  webhook_token: ""   # schützt /api/webhook
+  cors_origins: []    # leer = nur gleiche Origin
+  backup_dir: ""      # leer = "backups" neben der Konfigurationsdatei
+```
+
+Ist `api_token` gesetzt, erwarten alle Endpunkte ausser `/api/health`, `/api/webhook` und Swagger den Token als `Authorization: Bearer <token>`, `X-API-Key: <token>` oder `?token=<token>` (für Loxone Virtual Outputs und den WebSocket im Browser).
+
+### Shelly-Geräte
 
 ```yaml
 shelly:
-  poll_interval: 10  # Status-Abfrage-Intervall in Sekunden
+  poll_interval: 10
   devices:
     - id: "buero_licht"
       name: "Büro Deckenleuchte"
       ip: "192.168.1.50"
       generation: 2
-    - id: "wohnen_roller"
-      name: "Wohnzimmer Storen"
-      ip: "192.168.1.51"
-      generation: 2
+      mqtt_id: "shellyplus1-aabbccddee"   # optional, Standard = id
+      username: "admin"                   # optional, falls Gerät passwortgeschützt
+      password: ""
 ```
 
 ### Loxone Miniserver
@@ -85,14 +111,17 @@ loxone:
     - id: "ms1"
       name: "Haupthaus"
       ip: "192.168.1.10"
-      port: 7777
+      port: 7777              # Port des Virtuellen UDP-Eingangs
       udp_enabled: true
       http_enabled: false
+      http_url: ""            # z.B. https://192.168.1.10 bei Gen2-Miniservern
+      http_insecure_tls: false
+      mqtt_enabled: false
+      mqtt_topic_prefix: "loxone2shelly"
+      send_all: false
 ```
 
 ### Mappings
-
-Zuordnung von Loxone-IDs zu Shelly-Geräten:
 
 ```yaml
 mappings:
@@ -101,30 +130,48 @@ mappings:
     loxone_id: "buero_licht"
     shelly_id: "buero_licht"
     shelly_type: "switch"
+    channel: 1              # optional: Kanal eines Mehrkanalgeräts
     enabled: true
     feedback_udp: true
-    feedback_http: false
+    feedback_http: true
+    feedback_mqtt: true
     miniserver_id: "ms1"
 ```
 
-## UDP Feedback Format
+Eine `loxone_id` darf nur einmal aktiv sein. Pro Shelly-Gerät sind mehrere Mappings erlaubt (z.B. eines pro Kanal). Ein Mapping ohne `channel` erhält den Gerätezustand bzw. Kanal 0.
 
-Status-Updates werden an den Loxone Miniserver im Format gesendet:
+## Feedback an Loxone
 
-```
-<loxone_id>/<eigenschaft>:<wert>
-```
+### UDP (Virtueller UDP-Eingang)
 
-Beispiele:
-- `buero_licht/on:1` - Schalter AN
-- `buero_licht/on:0` - Schalter AUS
-- `buero_dimmer/bri:75` - Helligkeit 75%
-- `wohnen_roller/pos:50` - Rolladen 50%
-- `buero_licht/power:12.5` - Leistung 12.5W
+Format `<loxone_id>/<property>:<wert>`. Werte werden immer gesendet, auch `0`:
 
-## WebSocket Kommandos
+| Property | Bedeutung | Typen |
+|----------|-----------|-------|
+| `on` | 0/1 | alle Ausgänge |
+| `bri` | Helligkeit 0-100 | dimmer, light, rgb(w) |
+| `pos` | Position 0-100 | roller |
+| `power`, `voltage`, `current`, `energy` | W, V, A, Wh | Geräte mit Messung |
+| `red`, `green`, `blue`, `white`, `ct` | Farbe / Farbtemperatur | rgb, rgbw, cct |
+| `temp`, `hum`, `lux`, `bat`, `smoke`, `flood` | Sensoren | sensor |
+| `total_power`, `power_a/b/c`, `voltage_a/b/c`, `current_a/b/c`, `total_energy` | 3-Phasen-Zähler | meter |
+| `input` | Eingangszustand 0/1 | input |
+| `push` | 1 = single, 2 = double, 3 = long, 4 = triple | input (Webhook/MQTT) |
+| `event` | Event-Name (Text) | input (Webhook/MQTT) |
 
-Bidirektionale Kommunikation über WebSocket (`ws://gateway:8080/ws`):
+Input-Events werden nie als `on` gemeldet, damit sie den Relais-Zustand nicht überschreiben.
+
+### HTTP (Virtueller Eingang)
+
+`GET <http_url>/dev/sps/io/<loxone_id>_<property>/<wert>` mit optionaler Basic-Auth. Bei `https://` und selbstsigniertem Zertifikat `http_insecure_tls: true` setzen.
+
+### MQTT
+
+Topic `<mqtt_topic_prefix>/<loxone_id>/<property>`, Payload = Wert. Voraussetzung: `mqtt.enabled: true` und `mqtt_enabled: true` am Miniserver.
+
+## Befehle von Loxone
+
+WebSocket `ws://gateway:8080/ws[?token=…]`, Textformat:
 
 ```
 SET buero_licht ON
@@ -134,65 +181,64 @@ SET wohnen_roller POS 50
 GET buero_licht STATUS
 ```
 
-JSON-Format:
+oder JSON:
+
 ```json
-{
-  "type": "command",
-  "payload": {
-    "type": "command",
-    "target": "buero_licht",
-    "action": "set",
-    "params": {"on": true}
-  }
-}
+{ "type": "command", "payload": { "target": "buero_licht", "action": "set", "params": { "on": true, "channel": 1 } } }
 ```
 
-## API Endpunkte
+Virtuelle HTTP-Ausgänge: `PUT /api/devices/<shelly_id>` mit Body `{"on":true,"channel":1}` (Export unter Einstellungen → XML).
+
+## Shelly Action-URLs (Webhook)
+
+```
+http://<gateway>:8080/api/webhook?device_id=<id>&event=single_push&channel=0[&token=<webhook_token>]
+```
+
+Erlaubte Events: `single_push`, `double_push`, `triple_push`, `long_push`, `btn_down`, `btn_up`, `toggle`, `on`, `off`, `open`, `close`, `stop`. Die URLs lassen sich im Tab "Eingänge" kopieren.
+
+## API
 
 | Methode | Pfad | Beschreibung |
 |---------|------|--------------|
-| GET | `/api/health` | Health Check |
-| GET | `/api/devices` | Alle Shelly-Geräte |
-| GET | `/api/devices/{id}` | Einzelnes Gerät |
-| PUT | `/api/devices/{id}` | Gerät steuern |
-| GET | `/api/inputs` | Alle Inputs |
-| GET | `/api/mappings` | Alle Mappings |
-| POST | `/api/mappings` | Mapping erstellen |
-| PUT | `/api/mappings/{id}` | Mapping aktualisieren |
-| DELETE | `/api/mappings/{id}` | Mapping löschen |
-| GET | `/api/config` | Konfiguration |
-| PUT | `/api/config` | Konfiguration aktualisieren |
-| GET | `/api/export/inputs` | Loxone Virtual Input XML |
-| GET | `/api/export/outputs` | Loxone Virtual Output XML |
+| GET | `/api/health` | Health, Version, Auth-Status (ohne Token) |
+| GET | `/api/devices[?refresh=1]` | Alle Geräte (Cache, optional live) |
+| GET/PUT | `/api/devices/{id}` | Gerät lesen / steuern |
+| GET | `/api/inputs` | Alle Eingänge |
+| GET/POST | `/api/mappings` | Mappings lesen / anlegen |
+| PUT/DELETE | `/api/mappings/{id}` | Mapping ändern / löschen |
+| GET/POST | `/api/mappings/export`, `/api/mappings/import` | JSON-Export / -Import |
+| GET/PUT | `/api/config` | Konfiguration (Secrets maskiert) lesen / ändern und anwenden |
+| GET/POST | `/api/backups` | Backups listen / erstellen (`{"remark":"…"}`) |
+| POST | `/api/backups/upload` | Backup hochladen |
+| GET/POST/DELETE | `/api/backups/{id}/download`, `/api/backups/{id}/restore`, `/api/backups/{id}` | Backup laden / wiederherstellen / löschen |
+| POST | `/api/udp/test` | UDP-Testnachricht `{"loxone_id","property","value"[,"miniserver_id"]}` |
+| GET | `/api/export/inputs`, `/api/export/outputs` | Loxone Virtual Input / Output XML |
+| GET | `/api/logs?level=&search=&limit=` | Log-Ringpuffer (max. 1000) |
+| GET | `/api/webhook` | Shelly Action-URL Endpunkt |
+| GET | `/api/shelly/discover` | mDNS-Suche |
 | POST | `/api/shelly/add` | Gerät hinzufügen |
-| DELETE | `/api/shelly/{id}` | Gerät entfernen |
-| WS | `/ws` | WebSocket |
+| PUT/DELETE | `/api/shelly/{id}` | Gerät ändern / entfernen |
+| POST | `/api/shelly/{id}/test` | Verbindungstest |
+| WS | `/ws` | WebSocket (Befehle, Live-Updates) |
 
-Vollständige API-Dokumentation: http://localhost:8080/api/swagger
+Vollständige Dokumentation: http://localhost:8080/api/swagger
 
 ## Unterstützte Shelly-Geräte
 
-### Gen2+ (empfohlen)
-- Shelly Plus 1 / Plus 1PM
-- Shelly Plus 2PM
-- Shelly Pro 1 / Pro 1PM / Pro 2PM
-- Shelly Plus Dimmer 0-10V
-- Shelly Plus RGBW PM
-- Shelly Pro 3EM
+Gen2+ (empfohlen): Plus 1/1PM/2PM, Plus i4, Plus Plug S, Plus Dimmer 0-10V, Plus RGBW PM, Plus H&T, Plus Smoke, Pro 1/1PM/2/2PM/4PM, Pro Dimmer, Pro 3EM / EM, Mini-Serie, Gen3/Gen4-Modelle, Wall Display, BLU-Sensoren über ein Gateway-Gerät.
 
-### Gen1
-- Shelly 1 / 1PM
-- Shelly 2.5
-- Shelly Dimmer 2
-- Shelly RGBW2
+Gen1: Shelly 1/1PM, 2.5, Dimmer 2, RGBW2, H&T, Plug S.
+
+Die Erkennung erfolgt anhand der gemeldeten Komponenten, nicht anhand einer Modellliste.
 
 ## Technologiestack
 
-- **Backend:** Go 1.22 (Gorilla Mux, WebSocket, zerolog)
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS
+- **Backend:** Go 1.24 (gorilla/mux, gorilla/websocket, paho.mqtt, zerolog, zeroconf)
+- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Vitest, ESLint
 - **Container:** Docker, Home Assistant Add-on
-- **Kommunikation:** HTTP/RPC, UDP, WebSocket
+- **CI:** GitHub Actions (gofmt, vet, staticcheck, Tests mit Race-Detector, Lint, Typecheck, Build)
 
 ## Lizenz
 
-MIT
+MIT, siehe [LICENSE](LICENSE).

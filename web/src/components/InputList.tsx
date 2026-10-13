@@ -1,4 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import * as api from '../services/api';
+import { buildWebhookUrl } from '../utils/webhook';
 import { Search, Zap, MousePointerClick, Copy, CheckCircle, ChevronDown, Wifi, WifiOff } from 'lucide-react';
 import type { Input, Device } from '../types';
 
@@ -38,14 +40,6 @@ function getEventLabel(event?: string) {
   }
 }
 
-function extractChannel(inputId: string): number {
-  const match = inputId.match(/:(\d+)$/);
-  return match ? parseInt(match[1], 10) : 0;
-}
-
-function buildWebhookUrl(host: string, protocol: string, deviceId: string, event: string, channel: number): string {
-  return `${protocol}//${host}/api/webhook?device_id=${deviceId}&event=${event}&channel=${channel}`;
-}
 
 interface DeviceGroup {
   device: Device | null;
@@ -57,6 +51,14 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
   const [search, setSearch] = useState('');
   const [expandedInput, setExpandedInput] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [tokenRequired, setTokenRequired] = useState(false);
+
+  useEffect(() => {
+    api
+      .getHealth()
+      .then((h) => setTokenRequired(!!h.webhook_token_required))
+      .catch(() => setTokenRequired(false));
+  }, []);
 
   const filteredInputs = inputs.filter(
     (i) =>
@@ -169,7 +171,7 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
               {/* Eingänge dieses Geräts */}
               <div className="space-y-1.5">
                 {group.inputs.map((input) => {
-                  const channel = extractChannel(input.id);
+                  const channel = input.channel;
                   const isExpanded = expandedInput === `${group.deviceId}:${input.id}`;
                   const expandKey = `${group.deviceId}:${input.id}`;
 
@@ -243,10 +245,15 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
                         <div className="border-t border-gray-700 px-4 py-3 bg-gray-800/50">
                           <p className="text-xs text-gray-400 mb-2">
                             Action-URLs für Shelly-Konfiguration:
+                            {tokenRequired && (
+                              <span className="block text-yellow-400 mt-1">
+                                WEBHOOK_TOKEN durch das konfigurierte Webhook-Token ersetzen (Einstellungen → Sicherheit).
+                              </span>
+                            )}
                           </p>
                           <div className="space-y-1.5">
                             {webhookEvents.map((event) => {
-                              const url = buildWebhookUrl(gatewayHost, protocol, input.device_id, event, channel);
+                              const url = buildWebhookUrl(gatewayHost, protocol, input.device_id, event, channel, tokenRequired);
                               return (
                                 <div
                                   key={event}

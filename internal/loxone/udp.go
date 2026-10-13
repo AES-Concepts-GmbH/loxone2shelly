@@ -104,7 +104,7 @@ func (s *UDPSender) Send(miniserverID, loxoneID, property string, value interfac
 	if err != nil {
 		log.Warn().Err(err).Str("miniserver", t.name).Str("msg", msg).Msg("Failed to send UDP feedback")
 	} else {
-		log.Info().Str("miniserver", t.name).Str("msg", msg).Msg("UDP feedback sent")
+		log.Debug().Str("miniserver", t.name).Str("msg", msg).Msg("UDP feedback sent")
 	}
 }
 
@@ -125,7 +125,7 @@ func (s *UDPSender) SendToAll(loxoneID, property string, value interface{}) {
 		if err != nil {
 			log.Warn().Err(err).Str("miniserver", t.name).Str("msg", msg).Msg("Failed to send UDP feedback")
 		} else {
-			log.Info().Str("miniserver", t.name).Str("msg", msg).Msg("UDP feedback sent")
+			log.Debug().Str("miniserver", t.name).Str("msg", msg).Msg("UDP feedback sent")
 		}
 	}
 }

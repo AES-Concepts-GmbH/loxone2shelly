@@ -20,14 +20,17 @@ import {
   EyeOff,
   MessageSquare,
   Pencil,
+  KeyRound,
+  Send,
 } from 'lucide-react';
 import type {
   ConfigResponse,
   MiniserverConfig,
   ShellyDeviceConfig,
-  ConfigBackup,
+  BackupMeta,
   LogEntry,
 } from '../types';
+import { MASKED_SECRET } from '../constants';
 import * as api from '../services/api';
 
 export default function SettingsPanel() {
@@ -45,6 +48,16 @@ export default function SettingsPanel() {
   const [isCreatingMs, setIsCreatingMs] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showMqttPassword, setShowMqttPassword] = useState(false);
+  const [showShellyPassword, setShowShellyPassword] = useState(false);
+  const [showApiToken, setShowApiToken] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [udpTest, setUdpTest] = useState<{ miniserver_id: string; loxone_id: string; property: string; value: string }>({
+    miniserver_id: '',
+    loxone_id: 'test',
+    property: 'on',
+    value: '1',
+  });
+  const [udpTestResult, setUdpTestResult] = useState<string | null>(null);
 
   // Shelly devices
   const [shellyDevices, setShellyDevices] = useState<ShellyDeviceConfig[]>([]);
@@ -54,7 +67,7 @@ export default function SettingsPanel() {
   const [discovering, setDiscovering] = useState(false);
 
   // Backups
-  const [backups, setBackups] = useState<ConfigBackup[]>([]);
+  const [backups, setBackups] = useState<BackupMeta[]>([]);
   const [backupRemark, setBackupRemark] = useState('');
   const [backupsLoading, setBackupsLoading] = useState(false);
 
@@ -88,8 +101,14 @@ export default function SettingsPanel() {
     if (!config) return;
     try {
       setConfigSaving(true);
-      await api.updateConfig(config);
+      const result = await api.updateConfig(config);
       setConfigError(null);
+      setSaveNotice(
+        result.restart_required
+          ? 'Gespeichert. Host/Port ändern sich erst nach einem Neustart.'
+          : 'Gespeichert und angewendet.'
+      );
+      await loadConfig();
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Fehler beim Speichern');
     } finally {
@@ -180,15 +199,26 @@ export default function SettingsPanel() {
     try {
       setDiscovering(true);
       const discovered = await api.discoverShelly();
-      if (discovered.length > 0) {
-        alert(`${discovered.length} Shelly Geräte gefunden!`);
-        setShellyDevices((prev) => {
-          const existingIds = new Set(prev.map((d) => d.id));
-          const newDevices = discovered.filter((d) => !existingIds.has(d.id));
-          return [...prev, ...newDevices];
-        });
-      } else {
-        alert('Keine neuen Shelly Geräte gefunden.');
+      const existingIps = new Set(shellyDevices.map((d) => d.ip));
+      const fresh = discovered.filter((d) => !existingIps.has(d.ip));
+      if (fresh.length === 0) {
+        setConfigError(
+          discovered.length === 0
+            ? 'Keine Shelly Geräte per mDNS gefunden. Discovery benötigt Host-Netzwerk (Docker: network_mode: host).'
+            : 'Alle gefundenen Geräte sind bereits konfiguriert.'
+        );
+        return;
+      }
+      const first = fresh[0];
+      setEditingShelly({
+        id: first.id.replace(/[^A-Za-z0-9_.-]/g, '-'),
+        name: first.model ? `${first.model} (${first.ip})` : first.name,
+        ip: first.ip,
+        generation: first.gen >= 2 ? 2 : 1,
+      });
+      setIsCreatingShelly(true);
+      if (fresh.length > 1) {
+        setSaveNotice(`${fresh.length} neue Geräte gefunden, erstes vorausgefüllt: ${fresh.map((d) => d.ip).join(', ')}`);
       }
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Discovery fehlgeschlagen');
@@ -225,8 +255,8 @@ export default function SettingsPanel() {
       return;
     try {
       await api.restoreBackup(id);
-      alert('Backup wiederhergestellt. Seite wird neu geladen.');
-      window.location.reload();
+      setSaveNotice('Backup wiederhergestellt und angewendet.');
+      await loadConfig();
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Restore fehlgeschlagen');
     }
@@ -316,6 +346,7 @@ export default function SettingsPanel() {
     { id: 'loxone', label: 'Loxone Miniserver', icon: Server },
     { id: 'shelly', label: 'Shelly Geräte', icon: Wifi },
     { id: 'mqtt', label: 'MQTT Broker', icon: MessageSquare },
+    { id: 'security', label: 'Sicherheit', icon: KeyRound },
     { id: 'backups', label: 'Backup & Restore', icon: HardDrive },
     { id: 'logs', label: 'Server Logs', icon: ScrollText },
   ];
@@ -348,6 +379,15 @@ export default function SettingsPanel() {
         <div className="mb-4 p-3 bg-red-500/20 text-red-400 rounded-lg text-sm flex items-center justify-between">
           {configError}
           <button onClick={() => setConfigError(null)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {saveNotice && (
+        <div className="mb-4 p-3 bg-green-500/20 text-green-400 rounded-lg text-sm flex items-center justify-between">
+          {saveNotice}
+          <button onClick={() => setSaveNotice(null)}>
             <X size={14} />
           </button>
         </div>
@@ -391,6 +431,9 @@ export default function SettingsPanel() {
                   http_url: '',
                   http_user: 'admin',
                   http_password: '',
+                  http_insecure_tls: false,
+                  mqtt_enabled: false,
+                  mqtt_topic_prefix: 'loxone2shelly',
                   send_all: false,
                 });
                 setIsCreatingMs(true);
@@ -472,9 +515,21 @@ export default function SettingsPanel() {
                       {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                   </div>
+                  <p className="text-[10px] text-gray-500 mt-1">Gespeicherte Passwörter werden als {MASKED_SECRET} angezeigt und bleiben erhalten, solange das Feld unverändert bleibt.</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">MQTT Topic-Prefix</label>
+                  <input
+                    type="text"
+                    value={editingMs.mqtt_topic_prefix || ''}
+                    onChange={(e) => setEditingMs({ ...editingMs, mqtt_topic_prefix: e.target.value })}
+                    className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                    placeholder="loxone2shelly"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">Topic: &lt;prefix&gt;/&lt;loxone_id&gt;/&lt;property&gt;</p>
                 </div>
               </div>
-              <div className="flex items-center gap-6 mt-3">
+              <div className="flex flex-wrap items-center gap-6 mt-3">
                 <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
                   <div className="toggle-switch">
                     <input
@@ -496,6 +551,28 @@ export default function SettingsPanel() {
                     <span className="toggle-slider"></span>
                   </div>
                   HTTP aktiviert
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <div className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={editingMs.http_insecure_tls || false}
+                      onChange={(e) => setEditingMs({ ...editingMs, http_insecure_tls: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </div>
+                  HTTPS-Zertifikat nicht prüfen
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <div className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={editingMs.mqtt_enabled || false}
+                      onChange={(e) => setEditingMs({ ...editingMs, mqtt_enabled: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </div>
+                  MQTT Feedback
                 </label>
                 <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
                   <div className="toggle-switch">
@@ -543,6 +620,7 @@ export default function SettingsPanel() {
                       {ms.ip}:{ms.port}
                       {ms.udp_enabled && ' | UDP'}
                       {ms.http_enabled && ' | HTTP'}
+                      {ms.mqtt_enabled && ' | MQTT'}
                     </p>
                   </div>
                 </div>
@@ -570,6 +648,61 @@ export default function SettingsPanel() {
           {(config.loxone?.miniservers || []).length === 0 && !editingMs && (
             <div className="text-center py-8 text-gray-400 text-sm">
               Kein Miniserver konfiguriert.
+            </div>
+          )}
+
+          {(config.loxone?.miniservers || []).some((m) => m.udp_enabled) && (
+            <div className="bg-gray-800 rounded-xl p-4 shadow-lg mt-4">
+              <h4 className="text-sm font-semibold text-white mb-2">UDP-Test senden</h4>
+              <p className="text-xs text-gray-500 mb-3">Sendet &lt;loxone_id&gt;/&lt;property&gt;:&lt;value&gt; an den gespeicherten Miniserver.</p>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                <select
+                  value={udpTest.miniserver_id}
+                  onChange={(e) => setUdpTest({ ...udpTest, miniserver_id: e.target.value })}
+                  className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                >
+                  <option value="">Alle (send_all)</option>
+                  {(config.loxone?.miniservers || []).filter((m) => m.udp_enabled).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={udpTest.loxone_id}
+                  onChange={(e) => setUdpTest({ ...udpTest, loxone_id: e.target.value })}
+                  placeholder="loxone_id"
+                  className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+                <input
+                  type="text"
+                  value={udpTest.property}
+                  onChange={(e) => setUdpTest({ ...udpTest, property: e.target.value })}
+                  placeholder="property"
+                  className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+                <input
+                  type="text"
+                  value={udpTest.value}
+                  onChange={(e) => setUdpTest({ ...udpTest, value: e.target.value })}
+                  placeholder="value"
+                  className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+                <button
+                  onClick={async () => {
+                    try {
+                      const r = await api.testUDP({ ...udpTest, miniserver_id: udpTest.miniserver_id || undefined });
+                      setUdpTestResult(r.message);
+                    } catch (err) {
+                      setUdpTestResult(err instanceof Error ? err.message : 'Fehler');
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors"
+                >
+                  <Send size={14} /> Senden
+                </button>
+              </div>
+              {udpTestResult && <p className="text-xs text-gray-400 mt-2">{udpTestResult}</p>}
+              <p className="text-[10px] text-gray-500 mt-2">Der Test verwendet die gespeicherte Konfiguration. Ungespeicherte Änderungen zuerst speichern.</p>
             </div>
           )}
         </div>
@@ -659,6 +792,35 @@ export default function SettingsPanel() {
                     className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
                     placeholder="z.B. shelly1pmg4-e4b06379f368"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Benutzer (Geräte-Login)</label>
+                  <input
+                    type="text"
+                    value={editingShelly.username || ''}
+                    onChange={(e) => setEditingShelly({ ...editingShelly, username: e.target.value })}
+                    className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                    placeholder="admin (Standard)"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Passwort (Geräte-Login)</label>
+                  <div className="relative">
+                    <input
+                      type={showShellyPassword ? 'text' : 'password'}
+                      value={editingShelly.password || ''}
+                      onChange={(e) => setEditingShelly({ ...editingShelly, password: e.target.value })}
+                      className="w-full px-3 py-2 pr-10 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                      placeholder="(optional, falls Gerät geschützt)"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowShellyPassword(!showShellyPassword)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                    >
+                      {showShellyPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-4">
@@ -766,6 +928,7 @@ export default function SettingsPanel() {
                 />
                 <span className="text-sm text-gray-400">Sekunden</span>
               </div>
+              <p className="text-[10px] text-gray-500 mt-2">Wird mit "Konfiguration speichern" sofort übernommen. Die Geräteansicht zeigt den letzten Abfragestand; Befehle lesen den Zustand direkt vom Gerät zurück.</p>
             </div>
           )}
         </div>
@@ -883,7 +1046,94 @@ export default function SettingsPanel() {
 
           <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
             <p className="text-yellow-400 text-xs">
-              <strong>Hinweis:</strong> Änderungen an der MQTT-Konfiguration erfordern einen Neustart des Servers, um wirksam zu werden.
+              <strong>Hinweis:</strong> Änderungen werden mit "Konfiguration speichern" sofort angewendet (Broker-Verbindung wird neu aufgebaut). Pro Miniserver muss zusätzlich "MQTT Feedback" aktiviert sein, damit Rückmeldungen per MQTT gesendet werden.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Security Section */}
+      {activeSection === 'security' && config && (
+        <div className="space-y-3">
+          <div className="bg-gray-800 rounded-xl p-4 shadow-lg">
+            <h3 className="text-sm font-semibold text-white mb-3">API-Zugriff</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">API-Token</label>
+                <div className="relative">
+                  <input
+                    type={showApiToken ? 'text' : 'password'}
+                    value={config.server?.api_token || ''}
+                    onChange={(e) =>
+                      setConfig({ ...config, server: { ...config.server, api_token: e.target.value } })
+                    }
+                    placeholder="(leer = kein Schutz)"
+                    className="w-full px-3 py-2 pr-10 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiToken(!showApiToken)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                  >
+                    {showApiToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Schützt REST-API, WebSocket und Web-UI. Nach dem Speichern muss sich die UI mit dem neuen Token anmelden.
+                  Loxone Virtual Outputs hängen <code>?token=…</code> an die URL an.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Webhook-Token</label>
+                <input
+                  type="text"
+                  value={config.server?.webhook_token || ''}
+                  onChange={(e) =>
+                    setConfig({ ...config, server: { ...config.server, webhook_token: e.target.value } })
+                  }
+                  placeholder="(leer = kein Schutz)"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Shelly Action-URLs müssen dann <code>&amp;token=…</code> enthalten (siehe Tab "Eingänge").
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Erlaubte CORS-Origins</label>
+                <input
+                  type="text"
+                  value={(config.server?.cors_origins || []).join(', ')}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      server: {
+                        ...config.server,
+                        cors_origins: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      },
+                    })
+                  }
+                  placeholder="(leer = nur gleiche Origin)"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Backup-Verzeichnis</label>
+                <input
+                  type="text"
+                  value={config.server?.backup_dir || ''}
+                  onChange={(e) =>
+                    setConfig({ ...config, server: { ...config.server, backup_dir: e.target.value } })
+                  }
+                  placeholder="(leer = neben der Konfigurationsdatei)"
+                  className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600 focus:border-shelly-blue focus:outline-none"
+                />
+              </div>
+            </div>
+          </div>
+          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+            <p className="text-yellow-400 text-xs">
+              <strong>Hinweis:</strong> Gespeicherte Geheimnisse werden als {MASKED_SECRET} angezeigt. Unveränderte Felder behalten ihren Wert.
+              Alternativ kann das API-Token über die Umgebungsvariable <code>L2S_API_TOKEN</code> gesetzt werden.
             </p>
           </div>
         </div>
@@ -932,10 +1182,10 @@ export default function SettingsPanel() {
               <div key={backup.id} className="bg-gray-800 rounded-xl p-4 shadow-lg">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h4 className="font-semibold text-white text-sm">{backup.remark}</h4>
+                    <h4 className="font-semibold text-white text-sm">{backup.remark || backup.id}</h4>
                     <p className="text-xs text-gray-400">
-                      {new Date(backup.created_at).toLocaleString('de-DE')} &middot; v
-                      {backup.version}
+                      {new Date(backup.created_at).toLocaleString('de-DE')} &middot; v{backup.version || '?'} &middot;{' '}
+                      {(backup.size / 1024).toFixed(1)} kB
                     </p>
                   </div>
                   <div className="flex items-center gap-1">

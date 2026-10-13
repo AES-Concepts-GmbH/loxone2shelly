@@ -6,13 +6,43 @@ type Mapping struct {
 	Name         string `json:"name" yaml:"name"`
 	LoxoneID     string `json:"loxone_id" yaml:"loxone_id"`
 	ShellyID     string `json:"shelly_id" yaml:"shelly_id"`
-	ShellyType   string `json:"shelly_type" yaml:"shelly_type"` // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "input"
+	ShellyType   string `json:"shelly_type" yaml:"shelly_type"` // "switch", "light", "dimmer", "roller", "rgb", "rgbw", "input", "sensor", "meter"
 	Enabled      bool   `json:"enabled" yaml:"enabled"`
 	FeedbackUDP  *bool  `json:"feedback_udp,omitempty" yaml:"feedback_udp,omitempty"`
 	FeedbackHTTP *bool  `json:"feedback_http,omitempty" yaml:"feedback_http,omitempty"`
 	FeedbackMQTT *bool  `json:"feedback_mqtt,omitempty" yaml:"feedback_mqtt,omitempty"`
 	Description  string `json:"description,omitempty" yaml:"description,omitempty"`
 	MiniserverID string `json:"miniserver_id,omitempty" yaml:"miniserver_id,omitempty"`
+	// Channel selects a single channel of a multi-channel device. nil means
+	// the device itself (primary channel), which keeps single-channel setups
+	// unchanged.
+	Channel *int `json:"channel,omitempty" yaml:"channel,omitempty"`
+}
+
+// Clone returns a deep copy of the mapping.
+func (m Mapping) Clone() Mapping {
+	cp := m
+	cp.FeedbackUDP = cloneBool(m.FeedbackUDP)
+	cp.FeedbackHTTP = cloneBool(m.FeedbackHTTP)
+	cp.FeedbackMQTT = cloneBool(m.FeedbackMQTT)
+	if m.Channel != nil {
+		v := *m.Channel
+		cp.Channel = &v
+	}
+	return cp
+}
+
+func cloneBool(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
+}
+
+// HasChannel reports whether the mapping targets a specific channel.
+func (m *Mapping) HasChannel() bool {
+	return m.Channel != nil
 }
 
 // ShouldFeedbackUDP returns true if UDP feedback should be sent for this mapping.
@@ -45,13 +75,6 @@ type LoxoneCommand struct {
 	Target string                 `json:"target"`
 	Action string                 `json:"action"`
 	Params map[string]interface{} `json:"params,omitempty"`
-}
-
-// LoxoneStatus represents a status update sent to Loxone
-type LoxoneStatus struct {
-	Type   string      `json:"type"`
-	Device string      `json:"device"`
-	State  interface{} `json:"state"`
 }
 
 // WebSocketMessage is a generic WebSocket message wrapper

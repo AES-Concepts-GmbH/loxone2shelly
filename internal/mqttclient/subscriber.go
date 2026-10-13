@@ -15,13 +15,16 @@ import (
 	"github.com/sbeyeler/loxone2shelly/internal/shelly"
 )
 
+const connectTimeout = 10 * time.Second
+
 // Subscriber connects to an MQTT broker and emits shelly.Event for device state changes.
+// Connecting happens in the background and never blocks the caller.
 type Subscriber struct {
-	client      mqtt.Client
+	client       mqtt.Client
 	shellyClient *shelly.Client
-	deviceMap   map[string]string // mqtt_id → config_id
-	topicPrefix string
-	mu          sync.RWMutex
+	deviceMap    map[string]string // mqtt_id → config_id
+	topicPrefix  string
+	mu           sync.RWMutex
 }
 
 // NewSubscriber creates a new MQTT subscriber.
@@ -37,6 +40,12 @@ func NewSubscriber(shellyClient *shelly.Client) *Subscriber {
 func (s *Subscriber) RegisterDevice(configID, mqttID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Drop any previous MQTT ID of this device.
+	for k, v := range s.deviceMap {
+		if v == configID {
+			delete(s.deviceMap, k)
+		}
+	}
 	if mqttID == "" {
 		mqttID = configID
 	}
@@ -44,12 +53,53 @@ func (s *Subscriber) RegisterDevice(configID, mqttID string) {
 	log.Debug().Str("mqtt_id", mqttID).Str("config_id", configID).Msg("MQTT device registered")
 }
 
-// Start connects to the MQTT broker and subscribes to Shelly topics.
+// UnregisterDevice removes all MQTT IDs of a config device.
+func (s *Subscriber) UnregisterDevice(configID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.deviceMap {
+		if v == configID {
+			delete(s.deviceMap, k)
+		}
+	}
+}
+
+// SetDevices replaces the whole device registry.
+func (s *Subscriber) SetDevices(devices []config.ShellyDeviceConfig) {
+	s.mu.Lock()
+	s.deviceMap = make(map[string]string, len(devices))
+	for _, d := range devices {
+		mqttID := d.MQTTID
+		if mqttID == "" {
+			mqttID = d.ID
+		}
+		s.deviceMap[mqttID] = d.ID
+	}
+	s.mu.Unlock()
+}
+
+// Start connects to the MQTT broker in the background and subscribes to Shelly
+// topics once connected. It returns immediately; connection problems are logged.
 func (s *Subscriber) Start(cfg config.MQTTConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.client != nil {
+		s.client.Disconnect(250)
+		s.client = nil
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.Broker == "" {
+		return fmt.Errorf("mqtt broker address is empty")
+	}
+
 	s.topicPrefix = cfg.TopicPrefix
 	if s.topicPrefix == "" {
 		s.topicPrefix = "shellies"
 	}
+	prefix := s.topicPrefix
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.Broker).
@@ -57,12 +107,13 @@ func (s *Subscriber) Start(cfg config.MQTTConfig) error {
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
 		SetConnectRetryInterval(5 * time.Second).
+		SetConnectTimeout(connectTimeout).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 			log.Warn().Err(err).Msg("MQTT connection lost")
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Info().Msg("MQTT connected, subscribing to topics")
-			s.subscribe(c)
+			subscribe(c, prefix, s.handleMessage)
 		})
 
 	if cfg.Username != "" {
@@ -72,23 +123,40 @@ func (s *Subscriber) Start(cfg config.MQTTConfig) error {
 		opts.SetPassword(cfg.Password)
 	}
 
-	s.client = mqtt.NewClient(opts)
+	client := mqtt.NewClient(opts)
+	s.client = client
 
-	token := s.client.Connect()
-	token.Wait()
-	if err := token.Error(); err != nil {
-		return fmt.Errorf("MQTT connect failed: %w", err)
-	}
+	token := client.Connect()
+	go func() {
+		token.Wait()
+		if err := token.Error(); err != nil {
+			log.Error().Err(err).Str("broker", cfg.Broker).Msg("MQTT connect failed")
+		}
+	}()
 
-	log.Info().Str("broker", cfg.Broker).Str("prefix", s.topicPrefix).Msg("MQTT subscriber started")
+	log.Info().Str("broker", cfg.Broker).Str("prefix", prefix).Msg("MQTT subscriber starting")
 	return nil
 }
 
-// subscribe sets up the topic subscription.
-func (s *Subscriber) subscribe(c mqtt.Client) {
-	topic := s.topicPrefix + "/#"
-	token := c.Subscribe(topic, 0, s.handleMessage)
-	token.Wait()
+// Restart applies a new MQTT configuration.
+func (s *Subscriber) Restart(cfg config.MQTTConfig) error {
+	return s.Start(cfg)
+}
+
+// IsConnected reports whether the broker connection is up.
+func (s *Subscriber) IsConnected() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.client != nil && s.client.IsConnectionOpen()
+}
+
+func subscribe(c mqtt.Client, prefix string, handler mqtt.MessageHandler) {
+	topic := prefix + "/#"
+	token := c.Subscribe(topic, 0, handler)
+	if !token.WaitTimeout(connectTimeout) {
+		log.Error().Str("topic", topic).Msg("MQTT subscribe timed out")
+		return
+	}
 	if err := token.Error(); err != nil {
 		log.Error().Err(err).Str("topic", topic).Msg("MQTT subscribe failed")
 		return
@@ -98,8 +166,11 @@ func (s *Subscriber) subscribe(c mqtt.Client) {
 
 // Close disconnects from the MQTT broker.
 func (s *Subscriber) Close() {
-	if s.client != nil && s.client.IsConnected() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != nil {
 		s.client.Disconnect(1000)
+		s.client = nil
 		log.Info().Msg("MQTT subscriber stopped")
 	}
 }
@@ -109,22 +180,23 @@ func (s *Subscriber) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 	payload := msg.Payload()
 
+	s.mu.RLock()
+	prefix := s.topicPrefix
+	s.mu.RUnlock()
+
 	// Strip prefix: "shellies/shelly1-AABB/relay/0" → "shelly1-AABB/relay/0"
-	rel := strings.TrimPrefix(topic, s.topicPrefix+"/")
+	rel := strings.TrimPrefix(topic, prefix+"/")
 	if rel == topic {
 		return // topic doesn't match prefix
 	}
 
-	// First segment is the device identifier
 	parts := strings.SplitN(rel, "/", 2)
 	if len(parts) < 2 {
 		return
 	}
-
 	mqttDeviceID := parts[0]
 	subTopic := parts[1]
 
-	// Resolve to config device ID
 	s.mu.RLock()
 	configID, known := s.deviceMap[mqttDeviceID]
 	s.mu.RUnlock()
@@ -133,272 +205,516 @@ func (s *Subscriber) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	// Route by sub-topic
-	switch {
-	// Gen2+: status/switch:N, status/light:N, status/cover:N
-	case strings.HasPrefix(subTopic, "status/"):
-		s.handleGen2Status(configID, subTopic, payload)
+	for _, ev := range ParseMessage(configID, subTopic, payload) {
+		s.shellyClient.PushEvent(ev)
+	}
+}
 
-	// Gen2+: events/rpc
+// ParseMessage converts a Shelly MQTT message (sub-topic below the device ID)
+// into zero or more events. It is exported for testing.
+func ParseMessage(configID, subTopic string, payload []byte) []shelly.Event {
+	switch {
+	// Gen2+: status/switch:N, status/light:N, status/cover:N, status/input:N, ...
+	case strings.HasPrefix(subTopic, "status/"):
+		if ev, ok := gen2Component(configID, strings.TrimPrefix(subTopic, "status/"), payload); ok {
+			return []shelly.Event{ev}
+		}
+		return nil
+
+	// Gen2+: events/rpc  {"method":"NotifyStatus","params":{"ts":..,"switch:0":{...}}}
 	case subTopic == "events/rpc":
-		s.handleGen2Events(configID, payload)
+		return gen2Events(configID, payload)
 
 	// Gen1: relay/N
 	case strings.HasPrefix(subTopic, "relay/"):
-		s.handleGen1Relay(configID, subTopic, payload)
+		return gen1Relay(configID, subTopic, payload)
 
 	// Gen1: roller/N/pos
 	case strings.HasPrefix(subTopic, "roller/"):
-		s.handleGen1Roller(configID, subTopic, payload)
+		return gen1Roller(configID, subTopic, payload)
 
 	// Gen1: light/N/status
 	case strings.HasPrefix(subTopic, "light/") && strings.HasSuffix(subTopic, "/status"):
-		s.handleGen1Light(configID, payload)
+		return gen1Light(configID, subTopic, payload)
 
-	// Gen1: input/N
+	// Gen1: input/N and input_event/N
 	case strings.HasPrefix(subTopic, "input/"):
-		s.handleGen1Input(configID, subTopic, payload)
+		return gen1Input(configID, subTopic, payload)
+	case strings.HasPrefix(subTopic, "input_event/"):
+		return gen1InputEvent(configID, subTopic, payload)
 
-	// Gen1: sensor/temperature, sensor/humidity
+	// Gen1: sensor/temperature, sensor/humidity, sensor/battery
 	case strings.HasPrefix(subTopic, "sensor/"):
-		s.handleGen1Sensor(configID, subTopic, payload)
+		return gen1Sensor(configID, subTopic, payload)
 	}
+	return nil
+}
+
+func channelPtr(i int) *int { return &i }
+
+func splitComponent(component string) (string, int, bool) {
+	kind, idxStr, ok := strings.Cut(component, ":")
+	if !ok {
+		return "", 0, false
+	}
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		return "", 0, false
+	}
+	return kind, idx, true
 }
 
 // --- Gen2+ handlers ---
 
-func (s *Subscriber) handleGen2Status(configID, subTopic string, payload []byte) {
-	// subTopic: "status/switch:0", "status/light:0", "status/cover:0", etc.
-	component := strings.TrimPrefix(subTopic, "status/")
-
+// gen2Component converts a single component status (e.g. "switch:1") into an event.
+func gen2Component(configID, component string, payload []byte) (shelly.Event, bool) {
 	var data map[string]interface{}
 	if err := json.Unmarshal(payload, &data); err != nil {
 		log.Debug().Str("id", configID).Str("component", component).Msg("MQTT: invalid JSON in Gen2 status")
-		return
+		return shelly.Event{}, false
 	}
-
-	state := models.DeviceState{}
-	var deviceType string
-
-	switch {
-	case strings.HasPrefix(component, "switch:"):
-		deviceType = "switch"
-		if output, ok := data["output"].(bool); ok {
-			state.On = output
-		}
-		if power, ok := data["apower"].(float64); ok {
-			state.Power = power
-		}
-		if voltage, ok := data["voltage"].(float64); ok {
-			state.Voltage = voltage
-		}
-		if current, ok := data["current"].(float64); ok {
-			state.Current = current
-		}
-
-	case strings.HasPrefix(component, "light:"):
-		deviceType = "light"
-		if output, ok := data["output"].(bool); ok {
-			state.On = output
-		}
-		if bri, ok := data["brightness"].(float64); ok {
-			state.Brightness = bri
-		}
-		if power, ok := data["apower"].(float64); ok {
-			state.Power = power
-		}
-
-	case strings.HasPrefix(component, "cover:"):
-		deviceType = "roller"
-		if pos, ok := data["current_pos"].(float64); ok {
-			state.Position = int(pos)
-		}
-		if power, ok := data["apower"].(float64); ok {
-			state.Power = power
-		}
-
-	default:
-		return
-	}
-
-	log.Debug().Str("id", configID).Str("type", deviceType).Str("component", component).Msg("MQTT Gen2 status update")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     deviceType,
-		Data:     state,
-	})
+	return gen2ComponentFromMap(configID, component, data)
 }
 
-func (s *Subscriber) handleGen2Events(configID string, payload []byte) {
-	// Gen2 events/rpc: {"method":"NotifyStatus","params":{"ts":1234,"switch:0":{"id":0,"output":true}}}
+func gen2ComponentFromMap(configID, component string, data map[string]interface{}) (shelly.Event, bool) {
+	kind, idx, ok := splitComponent(component)
+	if !ok {
+		return shelly.Event{}, false
+	}
+
+	state := make(map[string]interface{})
+	var props []models.Prop
+	add := func(uiKey, loxKey string, v interface{}) {
+		state[uiKey] = v
+		props = append(props, models.Prop{Name: loxKey, Value: v})
+	}
+	fmt1 := func(f float64) string { return strconv.FormatFloat(f, 'f', 1, 64) }
+	fmt3 := func(f float64) string { return strconv.FormatFloat(f, 'f', 3, 64) }
+
+	var eventType string
+	switch kind {
+	case "switch":
+		eventType = "switch"
+		if output, ok := data["output"].(bool); ok {
+			add("on", "on", boolToInt(output))
+			state["on"] = output
+		}
+		if p, ok := data["apower"].(float64); ok {
+			add("power", "power", fmt1(p))
+			state["power"] = p
+		}
+		if v, ok := data["voltage"].(float64); ok {
+			add("voltage", "voltage", fmt1(v))
+			state["voltage"] = v
+		}
+		if a, ok := data["current"].(float64); ok {
+			add("current", "current", fmt3(a))
+			state["current"] = a
+		}
+		if e, ok := data["aenergy"].(map[string]interface{}); ok {
+			if total, ok := e["total"].(float64); ok {
+				add("energy", "energy", fmt1(total))
+				state["energy"] = total
+			}
+		}
+
+	case "light", "cct":
+		eventType = "light"
+		if output, ok := data["output"].(bool); ok {
+			add("on", "on", boolToInt(output))
+			state["on"] = output
+		}
+		if bri, ok := data["brightness"].(float64); ok {
+			add("brightness", "bri", int(bri))
+			state["brightness"] = bri
+		}
+		if ct, ok := data["ct"].(float64); ok {
+			add("color_temp", "ct", int(ct))
+		}
+		if p, ok := data["apower"].(float64); ok {
+			add("power", "power", fmt1(p))
+			state["power"] = p
+		}
+
+	case "rgb", "rgbw":
+		eventType = kind
+		if output, ok := data["output"].(bool); ok {
+			add("on", "on", boolToInt(output))
+			state["on"] = output
+		}
+		if bri, ok := data["brightness"].(float64); ok {
+			add("brightness", "bri", int(bri))
+			state["brightness"] = bri
+		}
+		if rgb, ok := data["rgb"].([]interface{}); ok && len(rgb) == 3 {
+			names := []string{"red", "green", "blue"}
+			for i, n := range names {
+				if f, ok := rgb[i].(float64); ok {
+					add(n, n, int(f))
+				}
+			}
+		}
+		if w, ok := data["white"].(float64); ok {
+			add("white", "white", int(w))
+		}
+
+	case "cover":
+		eventType = "roller"
+		if pos, ok := data["current_pos"].(float64); ok {
+			add("position", "pos", int(pos))
+		}
+		if p, ok := data["apower"].(float64); ok {
+			add("power", "power", fmt1(p))
+			state["power"] = p
+		}
+		if st, ok := data["state"].(string); ok {
+			state["cover_state"] = st
+		}
+
+	case "input":
+		eventType = "input"
+		if st, ok := data["state"].(bool); ok {
+			add("input", "input", boolToInt(st))
+			state["input"] = st
+		}
+		if ev, ok := data["event"].(string); ok && ev != "" {
+			add("event", "event", ev)
+			if push, ok := pushCode(ev); ok {
+				props = append(props, models.Prop{Name: "push", Value: push})
+			}
+		}
+
+	case "temperature":
+		eventType = "sensor"
+		if t, ok := data["tC"].(float64); ok {
+			add("temperature", "temp", fmt1(t))
+			state["temperature"] = t
+		}
+	case "humidity":
+		eventType = "sensor"
+		if rh, ok := data["rh"].(float64); ok {
+			add("humidity", "hum", fmt1(rh))
+			state["humidity"] = rh
+		}
+	case "illuminance":
+		eventType = "sensor"
+		if lux, ok := data["lux"].(float64); ok {
+			add("illuminance", "lux", strconv.FormatFloat(lux, 'f', 0, 64))
+			state["illuminance"] = lux
+		}
+	case "smoke":
+		eventType = "sensor"
+		if alarm, ok := data["alarm"].(bool); ok {
+			add("smoke", "smoke", boolToInt(alarm))
+			state["smoke"] = alarm
+		}
+	case "flood":
+		eventType = "sensor"
+		if alarm, ok := data["alarm"].(bool); ok {
+			add("flood", "flood", boolToInt(alarm))
+			state["flood"] = alarm
+		}
+	case "devicepower":
+		eventType = "sensor"
+		if bat, ok := data["battery"].(map[string]interface{}); ok {
+			if pct, ok := bat["percent"].(float64); ok {
+				add("battery", "bat", strconv.FormatFloat(pct, 'f', 0, 64))
+				state["battery"] = pct
+			}
+		}
+	case "em":
+		eventType = "meter"
+		if p, ok := data["total_act_power"].(float64); ok {
+			add("total_power", "total_power", fmt1(p))
+			state["total_power"] = p
+			state["power"] = p
+		}
+		for _, ph := range []string{"a", "b", "c"} {
+			if p, ok := data[ph+"_act_power"].(float64); ok {
+				add("power_"+ph, "power_"+ph, fmt1(p))
+				state["power_"+ph] = p
+			}
+			if v, ok := data[ph+"_voltage"].(float64); ok {
+				add("voltage_"+ph, "voltage_"+ph, fmt1(v))
+				state["voltage_"+ph] = v
+			}
+			if a, ok := data[ph+"_current"].(float64); ok {
+				add("current_"+ph, "current_"+ph, fmt3(a))
+				state["current_"+ph] = a
+			}
+		}
+	case "pm1", "em1":
+		eventType = "meter"
+		if p, ok := data["apower"].(float64); ok {
+			add("power", "power", fmt1(p))
+			state["power"] = p
+		}
+		if p, ok := data["act_power"].(float64); ok {
+			add("power", "power", fmt1(p))
+			state["power"] = p
+		}
+		if v, ok := data["voltage"].(float64); ok {
+			add("voltage", "voltage", fmt1(v))
+			state["voltage"] = v
+		}
+		if a, ok := data["current"].(float64); ok {
+			add("current", "current", fmt3(a))
+			state["current"] = a
+		}
+	default:
+		return shelly.Event{}, false
+	}
+
+	if len(props) == 0 {
+		return shelly.Event{}, false
+	}
+
+	ev := shelly.Event{
+		DeviceID: configID,
+		Type:     eventType,
+		State:    state,
+		Props:    props,
+	}
+	// Output components are channel-addressable; sensors are device-level.
+	switch kind {
+	case "switch", "light", "cct", "rgb", "rgbw", "cover", "input":
+		ev.Channel = channelPtr(idx)
+	}
+	return ev, true
+}
+
+func gen2Events(configID string, payload []byte) []shelly.Event {
 	var msg struct {
-		Method string                            `json:"method"`
-		Params map[string]json.RawMessage        `json:"params"`
+		Method string                     `json:"method"`
+		Params map[string]json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		return
+		return nil
 	}
 
-	if msg.Method != "NotifyStatus" {
-		return
-	}
-
-	state := models.DeviceState{}
-	var deviceType string
-
-	for key, raw := range msg.Params {
-		if key == "ts" {
-			continue
-		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal(raw, &data); err != nil {
-			continue
-		}
-
-		switch {
-		case strings.HasPrefix(key, "switch:"):
-			deviceType = "switch"
-			if output, ok := data["output"].(bool); ok {
-				state.On = output
+	var events []shelly.Event
+	switch msg.Method {
+	case "NotifyStatus", "NotifyFullStatus":
+		for key, raw := range msg.Params {
+			if key == "ts" {
+				continue
 			}
-			if power, ok := data["apower"].(float64); ok {
-				state.Power = power
+			var data map[string]interface{}
+			if err := json.Unmarshal(raw, &data); err != nil {
+				continue
 			}
-		case strings.HasPrefix(key, "light:"):
-			deviceType = "light"
-			if output, ok := data["output"].(bool); ok {
-				state.On = output
-			}
-			if bri, ok := data["brightness"].(float64); ok {
-				state.Brightness = bri
-			}
-		case strings.HasPrefix(key, "cover:"):
-			deviceType = "roller"
-			if pos, ok := data["current_pos"].(float64); ok {
-				state.Position = int(pos)
+			if ev, ok := gen2ComponentFromMap(configID, key, data); ok {
+				events = append(events, ev)
 			}
 		}
+	case "NotifyEvent":
+		// {"method":"NotifyEvent","params":{"ts":..,"events":[{"component":"input:0","id":0,"event":"single_push","ts":..}]}}
+		rawEvents, ok := msg.Params["events"]
+		if !ok {
+			return nil
+		}
+		var list []struct {
+			Component string `json:"component"`
+			ID        int    `json:"id"`
+			Event     string `json:"event"`
+		}
+		if err := json.Unmarshal(rawEvents, &list); err != nil {
+			return nil
+		}
+		for _, e := range list {
+			if !strings.HasPrefix(e.Component, "input:") || e.Event == "" {
+				continue
+			}
+			props := []models.Prop{{Name: "event", Value: e.Event}}
+			if push, ok := pushCode(e.Event); ok {
+				props = append(props, models.Prop{Name: "push", Value: push})
+			}
+			events = append(events, shelly.Event{
+				DeviceID: configID,
+				Type:     "input",
+				Channel:  channelPtr(e.ID),
+				State:    map[string]interface{}{"event": e.Event},
+				Props:    props,
+			})
+		}
 	}
+	return events
+}
 
-	if deviceType == "" {
-		return
+// pushCode maps Shelly button events to the numeric "push" property.
+func pushCode(event string) (int, bool) {
+	switch event {
+	case "single_push", "S":
+		return 1, true
+	case "double_push", "SS":
+		return 2, true
+	case "long_push", "L":
+		return 3, true
+	case "triple_push", "SSS":
+		return 4, true
 	}
-
-	log.Debug().Str("id", configID).Str("type", deviceType).Msg("MQTT Gen2 RPC event")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     deviceType,
-		Data:     state,
-	})
+	return 0, false
 }
 
 // --- Gen1 handlers ---
 
-func (s *Subscriber) handleGen1Relay(configID, subTopic string, payload []byte) {
-	// subTopic: "relay/0" → payload: "on" or "off"
-	val := strings.TrimSpace(string(payload))
-
-	state := models.DeviceState{}
-	state.On = (val == "on")
-
-	log.Debug().Str("id", configID).Bool("on", state.On).Msg("MQTT Gen1 relay update")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     "switch",
-		Data:     state,
-	})
-}
-
-func (s *Subscriber) handleGen1Roller(configID, subTopic string, payload []byte) {
-	// subTopic: "roller/0/pos" → payload: "50"
-	if !strings.HasSuffix(subTopic, "/pos") {
-		return
+func gen1Channel(subTopic string) *int {
+	parts := strings.Split(subTopic, "/")
+	if len(parts) < 2 {
+		return nil
 	}
-
-	pos, err := strconv.Atoi(strings.TrimSpace(string(payload)))
+	idx, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return
+		return nil
 	}
-
-	state := models.DeviceState{Position: pos}
-
-	log.Debug().Str("id", configID).Int("pos", pos).Msg("MQTT Gen1 roller update")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     "roller",
-		Data:     state,
-	})
+	return &idx
 }
 
-func (s *Subscriber) handleGen1Light(configID string, payload []byte) {
-	// payload: JSON {"ison":true,"brightness":50,...}
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		return
-	}
-
-	state := models.DeviceState{}
-	if ison, ok := data["ison"].(bool); ok {
-		state.On = ison
-	}
-	if bri, ok := data["brightness"].(float64); ok {
-		state.Brightness = bri
-	}
-
-	log.Debug().Str("id", configID).Bool("on", state.On).Float64("bri", state.Brightness).Msg("MQTT Gen1 light update")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     "light",
-		Data:     state,
-	})
-}
-
-func (s *Subscriber) handleGen1Input(configID, subTopic string, payload []byte) {
-	// subTopic: "input/0" → payload: "0" or "1"
+func gen1Relay(configID, subTopic string, payload []byte) []shelly.Event {
+	// relay/N → "on"/"off"; relay/N/power → "12.3"; relay/N/energy → Wmin
+	parts := strings.Split(subTopic, "/")
+	ch := gen1Channel(subTopic)
 	val := strings.TrimSpace(string(payload))
-
-	state := models.DeviceState{}
-	state.On = (val == "1")
-
-	log.Debug().Str("id", configID).Bool("on", state.On).Msg("MQTT Gen1 input update")
-
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     "input",
-		Data:     state,
-	})
-}
-
-func (s *Subscriber) handleGen1Sensor(configID, subTopic string, payload []byte) {
-	// subTopic: "sensor/temperature" or "sensor/humidity"
-	val, err := strconv.ParseFloat(strings.TrimSpace(string(payload)), 64)
-	if err != nil {
-		return
-	}
-
-	state := models.DeviceState{}
-	deviceType := "sensor"
 
 	switch {
-	case strings.HasSuffix(subTopic, "temperature"):
-		state.Temperature = &val
-	case strings.HasSuffix(subTopic, "humidity"):
-		state.Humidity = &val
-	default:
-		return
+	case len(parts) == 2:
+		if val != "on" && val != "off" {
+			return nil
+		}
+		on := val == "on"
+		return []shelly.Event{{
+			DeviceID: configID, Type: "switch", Channel: ch,
+			State: map[string]interface{}{"on": on},
+			Props: []models.Prop{{Name: "on", Value: boolToInt(on)}},
+		}}
+	case len(parts) == 3 && parts[2] == "power":
+		p, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return nil
+		}
+		return []shelly.Event{{
+			DeviceID: configID, Type: "switch", Channel: ch,
+			State: map[string]interface{}{"power": p},
+			Props: []models.Prop{{Name: "power", Value: strconv.FormatFloat(p, 'f', 1, 64)}},
+		}}
+	case len(parts) == 3 && parts[2] == "energy":
+		wmin, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return nil
+		}
+		wh := wmin / 60
+		return []shelly.Event{{
+			DeviceID: configID, Type: "switch", Channel: ch,
+			State: map[string]interface{}{"energy": wh},
+			Props: []models.Prop{{Name: "energy", Value: strconv.FormatFloat(wh, 'f', 1, 64)}},
+		}}
 	}
+	return nil
+}
 
-	log.Debug().Str("id", configID).Str("sensor", subTopic).Float64("value", val).Msg("MQTT Gen1 sensor update")
+func gen1Roller(configID, subTopic string, payload []byte) []shelly.Event {
+	// roller/N/pos → "50"
+	if !strings.HasSuffix(subTopic, "/pos") {
+		return nil
+	}
+	pos, err := strconv.Atoi(strings.TrimSpace(string(payload)))
+	if err != nil {
+		return nil
+	}
+	return []shelly.Event{{
+		DeviceID: configID, Type: "roller", Channel: gen1Channel(subTopic),
+		State: map[string]interface{}{"position": pos},
+		Props: []models.Prop{{Name: "pos", Value: pos}},
+	}}
+}
 
-	s.shellyClient.PushEvent(shelly.Event{
-		DeviceID: configID,
-		Type:     deviceType,
-		Data:     state,
-	})
+func gen1Light(configID, subTopic string, payload []byte) []shelly.Event {
+	// light/N/status → {"ison":true,"brightness":50,...}
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return nil
+	}
+	state := make(map[string]interface{})
+	var props []models.Prop
+	if ison, ok := data["ison"].(bool); ok {
+		state["on"] = ison
+		props = append(props, models.Prop{Name: "on", Value: boolToInt(ison)})
+	}
+	if bri, ok := data["brightness"].(float64); ok {
+		state["brightness"] = bri
+		props = append(props, models.Prop{Name: "bri", Value: int(bri)})
+	}
+	if len(props) == 0 {
+		return nil
+	}
+	return []shelly.Event{{
+		DeviceID: configID, Type: "light", Channel: gen1Channel(subTopic),
+		State: state, Props: props,
+	}}
+}
+
+func gen1Input(configID, subTopic string, payload []byte) []shelly.Event {
+	// input/N → "0"/"1"
+	val := strings.TrimSpace(string(payload))
+	if val != "0" && val != "1" {
+		return nil
+	}
+	on := val == "1"
+	return []shelly.Event{{
+		DeviceID: configID, Type: "input", Channel: gen1Channel(subTopic),
+		State: map[string]interface{}{"input": on},
+		Props: []models.Prop{{Name: "input", Value: boolToInt(on)}},
+	}}
+}
+
+func gen1InputEvent(configID, subTopic string, payload []byte) []shelly.Event {
+	// input_event/N → {"event":"S","event_cnt":3}
+	var data struct {
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal(payload, &data); err != nil || data.Event == "" {
+		return nil
+	}
+	props := []models.Prop{{Name: "event", Value: data.Event}}
+	if push, ok := pushCode(data.Event); ok {
+		props = append(props, models.Prop{Name: "push", Value: push})
+	}
+	return []shelly.Event{{
+		DeviceID: configID, Type: "input", Channel: gen1Channel(subTopic),
+		State: map[string]interface{}{"event": data.Event},
+		Props: props,
+	}}
+}
+
+func gen1Sensor(configID, subTopic string, payload []byte) []shelly.Event {
+	// sensor/temperature, sensor/humidity, sensor/battery
+	val, err := strconv.ParseFloat(strings.TrimSpace(string(payload)), 64)
+	if err != nil {
+		return nil
+	}
+	var uiKey, loxKey string
+	switch strings.TrimPrefix(subTopic, "sensor/") {
+	case "temperature":
+		uiKey, loxKey = "temperature", "temp"
+	case "humidity":
+		uiKey, loxKey = "humidity", "hum"
+	case "battery":
+		uiKey, loxKey = "battery", "bat"
+	case "lux":
+		uiKey, loxKey = "illuminance", "lux"
+	default:
+		return nil
+	}
+	return []shelly.Event{{
+		DeviceID: configID, Type: "sensor",
+		State: map[string]interface{}{uiKey: val},
+		Props: []models.Prop{{Name: loxKey, Value: strconv.FormatFloat(val, 'f', 1, 64)}},
+	}}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
