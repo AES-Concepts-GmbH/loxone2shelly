@@ -86,28 +86,14 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 		Msg("Webhook received")
 
 	props := loxone.WebhookProps(event, value)
-	mappings := h.deps.Mappings.GetByShellyID(deviceID)
 
 	sent := 0
 	var loxoneID string
-	for i := range mappings {
-		m := &mappings[i]
-		target := ""
-		switch {
-		case m.Channel != nil && *m.Channel == channel:
-			target = m.LoxoneID
-		case m.Channel == nil && channel == 0:
-			target = m.LoxoneID
-		case m.Channel == nil:
-			// Device-level mapping on a multi-channel device: suffix the channel.
-			target = fmt.Sprintf("%s_%d", m.LoxoneID, channel)
-		default:
-			continue
-		}
+	for _, wm := range webhookTargets(h.deps.Mappings.GetByShellyID(deviceID), channel) {
 		if loxoneID == "" {
-			loxoneID = target
+			loxoneID = wm.loxoneID
 		}
-		h.deps.Dispatcher.SendToMapping(m, target, props)
+		h.deps.Dispatcher.SendToMapping(wm.mapping, wm.loxoneID, props)
 		sent++
 	}
 
@@ -136,6 +122,34 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "ok", "mappings": sent})
+}
+
+type webhookTarget struct {
+	mapping  *models.Mapping
+	loxoneID string
+}
+
+// webhookTargets selects the mappings a webhook event on the given channel is
+// delivered to. Channel-specific mappings win; without one, device-level
+// mappings receive the event, with a "_<channel>" suffix for channels > 0 so
+// multi-channel devices stay distinguishable in Loxone.
+func webhookTargets(mappings []models.Mapping, channel int) []webhookTarget {
+	var specific, deviceLevel []webhookTarget
+	for i := range mappings {
+		m := &mappings[i]
+		switch {
+		case m.Channel != nil && *m.Channel == channel:
+			specific = append(specific, webhookTarget{m, m.LoxoneID})
+		case m.Channel == nil && channel == 0:
+			deviceLevel = append(deviceLevel, webhookTarget{m, m.LoxoneID})
+		case m.Channel == nil:
+			deviceLevel = append(deviceLevel, webhookTarget{m, fmt.Sprintf("%s_%d", m.LoxoneID, channel)})
+		}
+	}
+	if len(specific) > 0 {
+		return specific
+	}
+	return deviceLevel
 }
 
 // eventFromWebhook converts a webhook call into an input event for UI clients.
