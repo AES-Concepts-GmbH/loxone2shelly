@@ -29,8 +29,13 @@ jobs:
         with:
           version: "latest"
           install-go: false
-      - name: go test (race)
-        run: go test -race -count=1 ./...
+      - name: go test (race, coverage)
+        run: go test -race -count=1 -coverprofile=coverage.out ./cmd/... ./internal/...
+      - name: coverage gate (85 %)
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | tr -d '%')
+          echo "total statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t + 0 < 85) { print "coverage below 85%"; exit 1 } }'
       - name: go build
         run: CGO_ENABLED=0 go build -ldflags="-X main.version=$(tr -d '[:space:]' < VERSION)" ./cmd/gateway
 
@@ -50,7 +55,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:coverage
       - run: npm run build
 
   docker:

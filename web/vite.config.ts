@@ -25,6 +25,8 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/__tests__/**', 'src/**/*.d.ts', 'src/main.tsx', 'src/types/**'],
       reporter: ['text', 'text-summary'],
+      // CI gate: fails the run when statement or line coverage drops below 90 %.
+      thresholds: { statements: 90, lines: 90 },
     },
   },
 })
