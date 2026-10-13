@@ -22,7 +22,8 @@ platform_for() {
 
 echo "Building Loxone2Shelly add-on v${VERSION}"
 for arch in "${ARCHS[@]}"; do
-    base=$(grep "^  ${arch}:" "$ADDON_DIR/build.yaml" | sed -E 's/.*: *"?([^"]+)"?/\1/')
+    base=$(awk -v arch="${arch}" '$1 == arch":" {gsub(/"/, "", $2); print $2}' "$ADDON_DIR/build.yaml")
+    test -n "$base" || { echo "no base image for ${arch} in build.yaml" >&2; exit 1; }
     echo "==> ${arch} (base: ${base})"
     docker buildx build \
         --platform "$(platform_for "$arch")" \

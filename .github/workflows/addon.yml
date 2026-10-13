@@ -33,7 +33,8 @@ jobs:
       - name: Read base image
         id: base
         run: |
-          base=$(grep "^  ${{ matrix.arch }}:" loxone2shelly/build.yaml | sed -E 's/.*: *"?([^"]+)"?/\1/')
+          base=$(awk -v arch="${{ matrix.arch }}" '$1 == arch":" {gsub(/"/, "", $2); print $2}' loxone2shelly/build.yaml)
+          test -n "$base" || { echo "no base image for ${{ matrix.arch }} in build.yaml"; exit 1; }
           echo "image=$base" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
