@@ -115,8 +115,9 @@ export function useShellyDevices(enabled = true) {
           setDevices((prev) => prev.map((d) => (d.id === result.id ? result : d)));
         }
       } catch (err) {
+        // Reload the real state first; refresh() clears the error, so set it afterwards.
+        await refresh();
         setError(err instanceof Error ? err.message : 'Fehler beim Steuern');
-        refresh();
       } finally {
         commandCooldowns.current.delete(deviceId);
       }
