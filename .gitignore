@@ -37,3 +37,6 @@ loxone2shelly/src/
 
 # Test output
 web/coverage/
+
+# Claude Code local settings
+.claude/settings.local.json
