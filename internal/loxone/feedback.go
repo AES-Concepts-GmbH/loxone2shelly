@@ -112,7 +112,11 @@ func PropsFromDevice(device *models.Device, channel *int) []models.Prop {
 	}
 
 	state := device.State
-	add("on", boolToInt(state.On))
+	// "on" is meaningless for pure sensors and meters; sending on:0 would
+	// show them as permanently off in Loxone.
+	if device.Type != "sensor" && device.Type != "meter" {
+		add("on", boolToInt(state.On))
+	}
 
 	if caps.SupportsDimming {
 		add("bri", int(state.Brightness))

@@ -123,6 +123,23 @@ func (p *CommandParser) ToDeviceCommand(cmd *models.LoxoneCommand, channel *int)
 		dc.Position = &pos
 	}
 
+	// Color channels (0-255) and color temperature (Kelvin)
+	if v, ok := toInt(cmd.Params["red"]); ok {
+		dc.Red = &v
+	}
+	if v, ok := toInt(cmd.Params["green"]); ok {
+		dc.Green = &v
+	}
+	if v, ok := toInt(cmd.Params["blue"]); ok {
+		dc.Blue = &v
+	}
+	if v, ok := toInt(cmd.Params["white"]); ok {
+		dc.White = &v
+	}
+	if v, ok := toInt(cmd.Params["color_temp"]); ok {
+		dc.ColorTemp = &v
+	}
+
 	if ch, ok := toInt(cmd.Params["channel"]); ok {
 		dc.Channel = &ch
 	} else if channel != nil {

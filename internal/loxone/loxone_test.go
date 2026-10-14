@@ -72,6 +72,37 @@ func TestPropsFromDeviceSensors(t *testing.T) {
 	if got["temp"] != "21.5" || got["hum"] != "40.0" {
 		t.Fatalf("sensor props wrong: %v", got)
 	}
+	if _, ok := got["on"]; ok {
+		t.Fatal("sensors must not report an 'on' property")
+	}
+
+	meter := &models.Device{ID: "m", Type: "meter", Capabilities: models.Capabilities{SupportsPower: true}}
+	if _, ok := propMap(PropsFromDevice(meter, nil))["on"]; ok {
+		t.Fatal("meters must not report an 'on' property")
+	}
+}
+
+func TestParseJSONCommandColor(t *testing.T) {
+	p := NewCommandParser()
+	cmd, err := p.ParseJSON([]byte(`{"target":"rgbw","params":{"red":255,"green":128,"blue":0,"white":10,"color_temp":4000}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := p.ToDeviceCommand(cmd, nil)
+	if dc.Red == nil || *dc.Red != 255 || dc.Green == nil || *dc.Green != 128 ||
+		dc.Blue == nil || *dc.Blue != 0 || dc.White == nil || *dc.White != 10 ||
+		dc.ColorTemp == nil || *dc.ColorTemp != 4000 {
+		t.Fatalf("color params not mapped: %+v", dc)
+	}
+
+	cmd, err = p.ParseJSON([]byte(`{"target":"rgbw","params":{"on":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc = p.ToDeviceCommand(cmd, nil)
+	if dc.Red != nil || dc.Green != nil || dc.Blue != nil || dc.White != nil || dc.ColorTemp != nil {
+		t.Fatalf("absent color params must stay nil: %+v", dc)
+	}
 }
 
 func TestWebhookPropsDoNotCollideWithRelayState(t *testing.T) {
