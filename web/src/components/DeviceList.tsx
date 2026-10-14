@@ -6,7 +6,8 @@ import DeviceCard from './DeviceCard';
 interface DeviceListProps {
   devices: Device[];
   loading: boolean;
-  onRefresh: () => void;
+  /** live=true queries the devices instead of the cache. */
+  onRefresh: (live?: boolean) => void;
   onCommand: (id: string, cmd: DeviceCommand) => void;
 }
 
@@ -42,7 +43,7 @@ export default function DeviceList({
           </p>
         </div>
         <button
-          onClick={onRefresh}
+          onClick={() => onRefresh(true)}
           disabled={loading}
           className="flex items-center gap-2 px-3 py-2 bg-shelly-blue hover:bg-shelly-blue/90 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
         >

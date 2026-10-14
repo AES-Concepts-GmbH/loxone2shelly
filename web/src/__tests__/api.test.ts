@@ -32,6 +32,20 @@ describe('token handling', () => {
     expect(api.getExportUrl('inputs')).toBe('/api/export/inputs?token=t%20k');
   });
 
+  it('prefixes requests and links with the proxy base path', async () => {
+    const base = document.createElement('base');
+    base.href = 'http://ha.local:8123/api/hassio_ingress/abc/';
+    document.head.appendChild(base);
+    try {
+      expect(api.getExportUrl('outputs')).toBe('/api/hassio_ingress/abc/api/export/outputs');
+      const fetchMock = mockFetch(200, '[]');
+      await api.getDevices();
+      expect(lastCall(fetchMock).url).toBe('/api/hassio_ingress/abc/api/devices');
+    } finally {
+      base.remove();
+    }
+  });
+
   it('sends the bearer header when a token is set', async () => {
     api.setToken('secret');
     const fetchMock = mockFetch(200, '[]');

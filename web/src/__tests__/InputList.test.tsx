@@ -70,6 +70,15 @@ describe('InputList', () => {
     expect(screen.queryByText(/WEBHOOK_TOKEN/)).toBeNull();
   });
 
+  it('reports when copying is not possible', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('insecure')) } });
+    render(<InputList inputs={inputs.slice(0, 1)} devices={devices} loading={false} />);
+    await waitFor(() => expect(api.getHealth).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('Webhook-URLs anzeigen'));
+    fireEvent.click(screen.getAllByTitle('URL kopieren')[0]);
+    await waitFor(() => expect(screen.getByText(/Kopieren nicht möglich/)).toBeInTheDocument());
+  });
+
   it('tolerates a failing health request', async () => {
     vi.mocked(api.getHealth).mockRejectedValue(new Error('down'));
     render(<InputList inputs={inputs.slice(0, 1)} devices={devices} loading={false} />);

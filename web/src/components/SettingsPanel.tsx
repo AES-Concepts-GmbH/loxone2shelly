@@ -32,6 +32,7 @@ import type {
 } from '../types';
 import { MASKED_SECRET } from '../constants';
 import * as api from '../services/api';
+import { newId } from '../utils/id';
 
 export default function SettingsPanel() {
   // Config
@@ -96,12 +97,17 @@ export default function SettingsPanel() {
     loadConfig();
   }, [loadConfig]);
 
-  // Save config
+  // Save config. Devices are added/removed through their own endpoints and
+  // tracked in shellyDevices, so the list loaded with the config is stale;
+  // sending it would delete devices added since (or resurrect removed ones).
   const handleSaveConfig = async () => {
     if (!config) return;
     try {
       setConfigSaving(true);
-      const result = await api.updateConfig(config);
+      const result = await api.updateConfig({
+        ...config,
+        shelly: { ...config.shelly, devices: shellyDevices },
+      });
       setConfigError(null);
       setSaveNotice(
         result.restart_required
@@ -422,7 +428,7 @@ export default function SettingsPanel() {
             <button
               onClick={() => {
                 setEditingMs({
-                  id: crypto.randomUUID(),
+                  id: newId(),
                   name: '',
                   ip: '',
                   port: 7000,

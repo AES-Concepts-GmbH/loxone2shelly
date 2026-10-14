@@ -24,7 +24,8 @@ interface DashboardProps {
   loading: boolean;
   error: string | null;
   isConnected: boolean;
-  onRefresh: () => void;
+  /** live=true queries the devices instead of the cache. */
+  onRefresh: (live?: boolean) => void;
   onCommand: (id: string, cmd: DeviceCommand) => void;
 }
 
@@ -58,10 +59,10 @@ export default function Dashboard({
   const [activeTab, setActiveTab] = useState<TabId>('devices');
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 30 seconds (from the cache; manual refresh is live)
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(onRefresh, 30000);
+    const interval = setInterval(() => onRefresh(), 30000);
     return () => clearInterval(interval);
   }, [autoRefresh, onRefresh]);
 

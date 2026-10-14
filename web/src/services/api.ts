@@ -10,8 +10,8 @@ import type {
   DiscoveredDevice,
   HealthResponse,
 } from '../types';
+import { apiBase } from '../utils/base';
 
-const BASE_URL = '/api';
 const TOKEN_KEY = 'l2s_api_token';
 
 /** Fired on window when the server rejects the current token. */
@@ -67,7 +67,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const response = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const response = await fetch(`${apiBase()}${path}`, { ...options, headers });
 
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
@@ -190,7 +190,7 @@ export async function deleteBackup(id: string): Promise<void> {
 }
 
 export function getBackupDownloadUrl(id: string): string {
-  return withToken(`${BASE_URL}/backups/${encodeURIComponent(id)}/download`);
+  return withToken(`${apiBase()}/backups/${encodeURIComponent(id)}/download`);
 }
 
 export async function uploadBackup(backup: unknown): Promise<BackupMeta> {
@@ -253,5 +253,5 @@ export async function testShellyConnection(id: string): Promise<{
 
 // Export downloads
 export function getExportUrl(kind: 'inputs' | 'outputs'): string {
-  return withToken(`${BASE_URL}/export/${kind}`);
+  return withToken(`${apiBase()}/export/${kind}`);
 }

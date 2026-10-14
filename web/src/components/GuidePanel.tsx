@@ -138,6 +138,7 @@ function useSections(): Section[] {
             <p><span className="text-gray-400">Loxone ID:</span> <span className="text-white font-mono">buero_licht</span></p>
             <p><span className="text-gray-400">Shelly:</span> <span className="text-white">Shelly Pro 2PM → Kanal 1</span></p>
             <p><span className="text-gray-400">Befehl:</span> <span className="text-white font-mono">SET buero_licht ON</span> bzw. <span className="text-white font-mono">PUT /api/devices/&lt;id&gt; {'{'}"on":true,"channel":1{'}'}</span></p>
+            <p><span className="text-gray-400">Rollladen:</span> <span className="text-white font-mono">SET wohnen_roller OPEN | CLOSE | STOP | POS 50</span> (ON/OFF öffnen und schliessen ebenfalls)</p>
             <p><span className="text-gray-400">Feedback:</span> <span className="text-white font-mono">buero_licht/on:1</span>, <span className="text-white font-mono">buero_licht/power:12.5</span></p>
           </div>
         </div>

@@ -75,10 +75,13 @@ export interface Capabilities {
 }
 
 export interface DeviceCommand {
+  /** Switch/light on or off; opens/closes covers */
   on?: boolean;
   brightness?: number;
   color_temp?: number;
   position?: number;
+  /** Stop a moving cover */
+  stop?: boolean;
   channel?: number;
 }
 
@@ -190,6 +193,8 @@ export interface HealthResponse {
   auth_required: boolean;
   webhook_token_required?: boolean;
   mqtt_connected?: boolean;
+  /** Port the gateway listens on; needed for device-reachable URLs behind a proxy. */
+  port?: number;
 }
 
 export interface WSMessage {
