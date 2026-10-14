@@ -50,6 +50,8 @@ Für die automatische Gerätesuche (mDNS) braucht der Container Host-Netzwerk (`
 
 Die Konfiguration liegt im Add-on-Config-Verzeichnis (`/config/config.yaml`), Backups in `/config/backups/`. Die Add-on-Images werden durch den Workflow `addon.yml` bei Versions-Tags nach `ghcr.io` veröffentlicht.
 
+Das Add-on läuft mit Host-Netzwerk (für mDNS). Port 8080 ist damit im LAN auch ohne Home-Assistant-Anmeldung erreichbar; das API-Token in den Add-on-Optionen schliesst diesen Weg. Unter Ingress erzeugt die Web-UI Action-URLs und WebSocket-Adressen mit dem Gateway-Port (`http://<HA-Host>:8080/...`), weil Shelly-Geräte und Loxone das Gateway direkt erreichen müssen.
+
 ### Lokal (Entwicklung)
 
 ```bash
@@ -88,7 +90,9 @@ server:
   backup_dir: ""      # leer = "backups" neben der Konfigurationsdatei
 ```
 
-Ist `api_token` gesetzt, erwarten alle Endpunkte ausser `/api/health`, `/api/webhook` und Swagger den Token als `Authorization: Bearer <token>`, `X-API-Key: <token>` oder `?token=<token>` (für Loxone Virtual Outputs und den WebSocket im Browser).
+Ist `api_token` gesetzt, erwarten alle Endpunkte ausser `/api/health`, `/api/webhook` und Swagger den Token als `Authorization: Bearer <token>`, `X-API-Key: <token>` oder `?token=<token>` (für Loxone Virtual Outputs und den WebSocket im Browser). Ein per `L2S_API_TOKEN` gesetzter Token gilt zur Laufzeit vor dem Wert aus der Datei und wird nie in die Datei geschrieben.
+
+`port` und `host` lassen sich per API ändern; sie werden gespeichert, gelten aber erst nach einem Neustart (`restart_required` in der Antwort).
 
 ### Shelly-Geräte
 
@@ -140,7 +144,7 @@ mappings:
     miniserver_id: "ms1"
 ```
 
-Eine `loxone_id` darf nur einmal aktiv sein. Pro Shelly-Gerät sind mehrere Mappings erlaubt (z.B. eines pro Kanal). Ein Mapping ohne `channel` erhält den Gerätezustand bzw. Kanal 0.
+Eine `loxone_id` darf nur einmal aktiv sein (auch beim Import). Pro Shelly-Gerät sind mehrere Mappings erlaubt (z.B. eines pro Kanal). Ein Mapping ohne `channel` erhält den Gerätezustand bzw. Kanal 0; Änderungen weiterer Kanäle ohne eigenes Mapping meldet es mit Suffix, z.B. `buero_licht_1/on:1` für Kanal 1. Das gilt gleich für Polling, MQTT und Webhooks.
 
 ## Feedback an Loxone
 
@@ -171,6 +175,8 @@ Input-Events werden nie als `on` gemeldet, damit sie den Relais-Zustand nicht ü
 
 Topic `<mqtt_topic_prefix>/<loxone_id>/<property>`, Payload = Wert. Voraussetzung: `mqtt.enabled: true` und `mqtt_enabled: true` am Miniserver.
 
+Feedback wird pro Miniserver in einer Warteschlange versendet; ein nicht erreichbarer Miniserver verzögert nur sein eigenes Feedback. Statusmeldungen, die per MQTT eintreffen, werden in den Gerätecache übernommen, damit das Polling dieselbe Änderung nicht ein zweites Mal meldet; unveränderte MQTT-Statusmeldungen werden verworfen.
+
 ## Befehle von Loxone
 
 WebSocket `ws://gateway:8080/ws[?token=…]`, Textformat:
@@ -180,8 +186,13 @@ SET buero_licht ON
 SET buero_licht OFF
 SET buero_dimmer BRI 75
 SET wohnen_roller POS 50
+SET wohnen_roller OPEN
+SET wohnen_roller CLOSE
+SET wohnen_roller STOP
 GET buero_licht STATUS
 ```
+
+Bei Rollläden/Covern bedeuten `ON`/`OFF` öffnen/schliessen; `STOP` hält die Fahrt an (JSON: `{"stop":true}`).
 
 oder JSON:
 
@@ -197,7 +208,7 @@ Virtuelle HTTP-Ausgänge: `PUT /api/devices/<shelly_id>` mit Body `{"on":true,"c
 http://<gateway>:8080/api/webhook?device_id=<id>&event=single_push&channel=0[&token=<webhook_token>]
 ```
 
-Erlaubte Events: `single_push`, `double_push`, `triple_push`, `long_push`, `btn_down`, `btn_up`, `toggle`, `on`, `off`, `open`, `close`, `stop`. Die URLs lassen sich im Tab "Eingänge" kopieren.
+Erlaubte Events: `single_push`, `double_push`, `triple_push`, `long_push`, `btn_down`, `btn_up`, `toggle`, `on`, `off`, `open`, `close`, `stop`. Der optionale Parameter `value` darf Buchstaben, Ziffern, `_`, `.`, `+` und `-` enthalten (max. 64 Zeichen). Die URLs lassen sich im Tab "Eingänge" kopieren.
 
 ## API
 
@@ -213,7 +224,7 @@ Erlaubte Events: `single_push`, `double_push`, `triple_push`, `long_push`, `btn_
 | GET/PUT | `/api/config` | Konfiguration (Secrets maskiert) lesen / ändern und anwenden |
 | GET/POST | `/api/backups` | Backups listen / erstellen (`{"remark":"…"}`) |
 | POST | `/api/backups/upload` | Backup hochladen |
-| GET/POST/DELETE | `/api/backups/{id}/download`, `/api/backups/{id}/restore`, `/api/backups/{id}` | Backup laden / wiederherstellen / löschen |
+| GET/POST/DELETE | `/api/backups/{id}/download`, `/api/backups/{id}/restore`, `/api/backups/{id}` | Backup laden (Secrets maskiert) / wiederherstellen / löschen |
 | POST | `/api/udp/test` | UDP-Testnachricht `{"loxone_id","property","value"[,"miniserver_id"]}` |
 | GET | `/api/export/inputs`, `/api/export/outputs` | Loxone Virtual Input / Output XML |
 | GET | `/api/logs?level=&search=&limit=` | Log-Ringpuffer (max. 1000) |
@@ -225,6 +236,8 @@ Erlaubte Events: `single_push`, `double_push`, `triple_push`, `long_push`, `btn_
 | WS | `/ws` | WebSocket (Befehle, Live-Updates) |
 
 Vollständige Dokumentation: http://localhost:8080/api/swagger
+
+Heruntergeladene Backups enthalten Passwörter und Tokens nur maskiert (`********`). Wird ein solches Backup hochgeladen und wiederhergestellt, bleiben die gespeicherten Werte erhalten; auf einer neuen Installation müssen sie neu eingetragen werden. Schlägt das Speichern der Konfigurationsdatei fehl, antworten die ändernden Endpunkte mit `500`; die Änderung ist dann nur im Speicher aktiv.
 
 ## Unterstützte Shelly-Geräte
 
