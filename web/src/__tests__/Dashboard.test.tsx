@@ -61,6 +61,8 @@ describe('Dashboard', () => {
       vi.advanceTimersByTime(30_000);
     });
     expect(props.onRefresh).toHaveBeenCalledTimes(1);
+    // The periodic refresh reads the cache (no live flag).
+    expect(props.onRefresh).toHaveBeenCalledWith();
 
     fireEvent.click(screen.getByRole('checkbox'));
     act(() => {

@@ -27,7 +27,8 @@ jobs:
       - name: staticcheck
         uses: dominikh/staticcheck-action@v1
         with:
-          version: "latest"
+          # Pinned for reproducible runs; bump deliberately.
+          version: "2026.2.2"
           install-go: false
       - name: go test (race, coverage)
         run: go test -race -count=1 -coverprofile=coverage.out ./cmd/... ./internal/...

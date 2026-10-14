@@ -2,7 +2,8 @@ server:
   port: 8080
   host: "0.0.0.0"
   # Protects REST API, WebSocket and Web UI. Leave empty only on a trusted network.
-  # Can also be set via the L2S_API_TOKEN environment variable.
+  # Can also be set via the L2S_API_TOKEN environment variable; that value
+  # overrides this one at runtime and is never written back to this file.
   api_token: ""
   # Protects /api/webhook (Shelly action URLs must append &token=<webhook_token>).
   webhook_token: ""

@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs: the server injects <base href> so the UI also works
+  // behind a path prefix (Home Assistant ingress).
+  base: './',
   server: {
     port: 3000,
     proxy: {

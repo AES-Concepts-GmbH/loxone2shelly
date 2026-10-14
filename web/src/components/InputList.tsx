@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect } from 'react';
-import * as api from '../services/api';
+import { useState, useMemo } from 'react';
 import { buildWebhookUrl } from '../utils/webhook';
+import { copyText } from '../utils/clipboard';
+import { useGatewayInfo } from '../hooks/useGatewayInfo';
 import { Search, Zap, MousePointerClick, Copy, CheckCircle, ChevronDown, Wifi, WifiOff } from 'lucide-react';
 import type { Input, Device } from '../types';
 
@@ -51,14 +52,8 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
   const [search, setSearch] = useState('');
   const [expandedInput, setExpandedInput] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  const [tokenRequired, setTokenRequired] = useState(false);
-
-  useEffect(() => {
-    api
-      .getHealth()
-      .then((h) => setTokenRequired(!!h.webhook_token_required))
-      .catch(() => setTokenRequired(false));
-  }, []);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const { tokenRequired, origin: gatewayOrigin } = useGatewayInfo();
 
   const filteredInputs = inputs.filter(
     (i) =>
@@ -89,14 +84,13 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
     });
   }, [filteredInputs, devices]);
 
-  const gatewayHost = window.location.host;
-  const protocol = window.location.protocol;
-
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text).then(() => {
+  async function copyToClipboard(text: string) {
+    const ok = await copyText(text);
+    setCopyFailed(!ok);
+    if (ok) {
       setCopiedUrl(text);
       setTimeout(() => setCopiedUrl(null), 2000);
-    });
+    }
   }
 
   const webhookEvents = ['single_push', 'double_push', 'long_push'];
@@ -250,10 +244,15 @@ export default function InputList({ inputs, devices, loading }: InputListProps) 
                                 WEBHOOK_TOKEN durch das konfigurierte Webhook-Token ersetzen (Einstellungen → Sicherheit).
                               </span>
                             )}
+                            {copyFailed && (
+                              <span className="block text-red-400 mt-1">
+                                Kopieren nicht möglich, bitte die URL manuell markieren.
+                              </span>
+                            )}
                           </p>
                           <div className="space-y-1.5">
                             {webhookEvents.map((event) => {
-                              const url = buildWebhookUrl(gatewayHost, protocol, input.device_id, event, channel, tokenRequired);
+                              const url = buildWebhookUrl(gatewayOrigin, input.device_id, event, channel, tokenRequired);
                               return (
                                 <div
                                   key={event}

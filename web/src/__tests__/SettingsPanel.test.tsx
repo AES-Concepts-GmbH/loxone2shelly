@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import type { ConfigResponse, BackupMeta, LogEntry } from '../types';
+import type { ConfigResponse, BackupMeta, LogEntry, ShellyDeviceConfig } from '../types';
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>();
@@ -203,10 +203,47 @@ describe('SettingsPanel', () => {
     await waitFor(() => expect(api.removeShelly).toHaveBeenCalledWith('dev1'));
     await waitFor(() => expect(screen.queryByText('Büro 2')).toBeNull());
 
-    // Poll interval
+    // Poll interval. Saving must send the current device list (dev1 removed,
+    // "Neu" added), not the one loaded with the config.
     fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '30' } });
     fireEvent.click(screen.getByRole('button', { name: /Konfiguration speichern/ }));
     await waitFor(() => expect(api.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ shelly: expect.objectContaining({ poll_interval: 30 }) })));
+    const calls = vi.mocked(api.updateConfig).mock.calls;
+    const sent = calls[calls.length - 1][0];
+    expect(sent.shelly.devices.map((d: ShellyDeviceConfig) => d.id)).toEqual(['generated']);
+  });
+
+  it('keeps a freshly added device when the configuration is saved afterwards', async () => {
+    vi.mocked(api.addShelly).mockImplementation(async (d) => ({ ...d, id: 'fresh' }));
+    await renderLoaded();
+    section(/Shelly Geräte/);
+    fireEvent.click(screen.getByRole('button', { name: /^Hinzufügen$/ }));
+    fireEvent.change(screen.getByPlaceholderText('192.168.1.50'), { target: { value: '10.0.0.9' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Hinzufügen$/ }).pop()!);
+    await waitFor(() => expect(api.addShelly).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: /Konfiguration speichern/ }));
+    await waitFor(() => expect(api.updateConfig).toHaveBeenCalled());
+    const sent = vi.mocked(api.updateConfig).mock.calls[0][0];
+    expect(sent.shelly.devices.map((d: ShellyDeviceConfig) => d.id)).toEqual(['dev1', 'fresh']);
+  });
+
+  it('adds a miniserver on origins without crypto.randomUUID', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: (a: Uint8Array) => a.fill(1) });
+    try {
+      await renderLoaded();
+      fireEvent.click(screen.getByRole('button', { name: /Hinzufügen/ }));
+      expect(screen.getByText('Neuer Miniserver')).toBeInTheDocument();
+      fireEvent.change(screen.getByPlaceholderText('192.168.1.100'), { target: { value: '10.0.0.3' } });
+      fireEvent.click(screen.getAllByRole('button', { name: 'Hinzufügen' }).pop()!);
+      fireEvent.click(screen.getByRole('button', { name: /Konfiguration speichern/ }));
+      await waitFor(() => expect(api.updateConfig).toHaveBeenCalled());
+      const sent = vi.mocked(api.updateConfig).mock.calls[0][0];
+      expect(sent.loxone.miniservers).toHaveLength(2);
+      expect(sent.loxone.miniservers[1].id).toMatch(/^[0-9a-f-]{36}$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('reports Shelly add errors and discovery results', async () => {

@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { Search, Radio, Copy, CheckCircle, ExternalLink } from 'lucide-react';
 import type { WebhookEvent, Device } from '../types';
+import { buildWebhookUrl } from '../utils/webhook';
+import { copyText } from '../utils/clipboard';
+import { useGatewayInfo } from '../hooks/useGatewayInfo';
 
 interface WebhookPanelProps {
   events: WebhookEvent[];
@@ -61,7 +64,9 @@ function formatTime(isoString: string) {
 export default function WebhookPanel({ events, devices }: WebhookPanelProps) {
   const [search, setSearch] = useState('');
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [showGuide, setShowGuide] = useState(events.length === 0);
+  const { tokenRequired, origin: gatewayOrigin } = useGatewayInfo();
 
   const filteredEvents = events.filter(
     (e) =>
@@ -70,19 +75,19 @@ export default function WebhookPanel({ events, devices }: WebhookPanelProps) {
       e.loxone_id.toLowerCase().includes(search.toLowerCase())
   );
 
-  const gatewayHost = window.location.host;
-  const protocol = window.location.protocol;
-  const baseUrl = `${protocol}//${gatewayHost}/api/webhook`;
+  const baseUrl = `${gatewayOrigin}/api/webhook`;
 
   function buildExampleUrl(deviceId: string) {
-    return `${baseUrl}?device_id=${deviceId}&event=single_push&channel=0`;
+    return buildWebhookUrl(gatewayOrigin, deviceId, 'single_push', 0, tokenRequired);
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text).then(() => {
+  async function copyToClipboard(text: string) {
+    const ok = await copyText(text);
+    setCopyFailed(!ok);
+    if (ok) {
       setCopiedUrl(text);
       setTimeout(() => setCopiedUrl(null), 2000);
-    });
+    }
   }
 
   // Gerätenamen-Lookup
@@ -168,13 +173,25 @@ export default function WebhookPanel({ events, devices }: WebhookPanelProps) {
                   <td className="py-1.5">Nein</td>
                   <td className="py-1.5">Kanal-Nr. bei Mehrkanalgeräten (Standard: 0)</td>
                 </tr>
-                <tr>
+                <tr className="border-b border-gray-700/50">
                   <td className="py-1.5 font-mono text-shelly-blue">value</td>
                   <td className="py-1.5">Nein</td>
-                  <td className="py-1.5">Zusätzlicher Wert (z.B. Helligkeit)</td>
+                  <td className="py-1.5">Zusätzlicher Wert (z.B. Helligkeit); Buchstaben, Ziffern, _ . + -</td>
+                </tr>
+                <tr>
+                  <td className="py-1.5 font-mono text-shelly-blue">token</td>
+                  <td className="py-1.5">{tokenRequired ? 'Ja' : 'Nein'}</td>
+                  <td className="py-1.5">
+                    {tokenRequired
+                      ? 'Das konfigurierte Webhook-Token (Einstellungen → Sicherheit); WEBHOOK_TOKEN in den Beispielen ersetzen'
+                      : 'Nur nötig, wenn ein Webhook-Token konfiguriert ist'}
+                  </td>
                 </tr>
               </tbody>
             </table>
+            {copyFailed && (
+              <p className="text-xs text-red-400">Kopieren nicht möglich, bitte die URL manuell markieren.</p>
+            )}
 
             {/* Beispiel-URLs für konfigurierte Geräte */}
             {devices.length > 0 && (

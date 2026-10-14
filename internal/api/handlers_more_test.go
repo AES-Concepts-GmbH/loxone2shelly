@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -492,8 +493,204 @@ func TestConfigUpdateRejectsInvalidInput(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"restart_required":true`) {
 		t.Fatalf("port change: %d %s", resp.StatusCode, body)
 	}
-	if config.Get().Server.Port != 8080 {
-		t.Fatal("listening port must not change at runtime")
+	// The new address is persisted for the next start; the running listener is unaffected.
+	if got := config.Get().Server; got.Port != 9999 || got.Host != "127.0.0.1" {
+		t.Fatalf("port/host not persisted: %+v", got)
+	}
+	// Omitted address keeps the stored one and needs no restart.
+	resp, body = do(t, "PUT", ts.URL+"/api/config", `{"server":{},"shelly":{"devices":[]},"loxone":{"miniservers":[]},"mqtt":{},"logging":{"level":"debug"}}`, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"restart_required":false`) || config.Get().Server.Port != 9999 {
+		t.Fatalf("omitted address: %d %s port=%d", resp.StatusCode, body, config.Get().Server.Port)
+	}
+	if resp, _ := do(t, "PUT", ts.URL+"/api/config", `{"server":{"port":70000},"shelly":{"devices":[]},"loxone":{"miniservers":[]},"mqtt":{},"logging":{}}`, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid port accepted: %d", resp.StatusCode)
+	}
+}
+
+func TestImportRejectsDuplicateLoxoneIDs(t *testing.T) {
+	ts, deps := newTestServer(t, "")
+	do(t, "POST", ts.URL+"/api/mappings", `{"id":"m1","name":"A","loxone_id":"a","shelly_id":"s","enabled":true}`, nil)
+
+	// Duplicate against an existing mapping and within the import itself.
+	for _, imp := range []string{
+		`[{"id":"m2","name":"B","loxone_id":"a","shelly_id":"s","enabled":true}]`,
+		`[{"id":"x1","name":"X","loxone_id":"x","shelly_id":"s","enabled":true},{"id":"x2","name":"Y","loxone_id":"x","shelly_id":"s","enabled":true}]`,
+	} {
+		resp, body := do(t, "POST", ts.URL+"/api/mappings/import", imp, nil)
+		if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "loxone_id") {
+			t.Fatalf("duplicate import accepted: %d %s", resp.StatusCode, body)
+		}
+	}
+	if len(config.GetMappings()) != 1 || deps.Mappings.GetByLoxoneID("x") != nil {
+		t.Fatal("rejected import must not change mappings")
+	}
+	// Disabled duplicates are fine.
+	resp, body := do(t, "POST", ts.URL+"/api/mappings/import", `[{"id":"m3","name":"C","loxone_id":"a","shelly_id":"s","enabled":false}]`, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("disabled duplicate rejected: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestWebhookRejectsUnsafeValues(t *testing.T) {
+	ts, _ := newTestServer(t, "shelly:\n  devices:\n    - id: dev1\n      ip: 10.0.0.9\n      generation: 2\n")
+	base := ts.URL + "/api/webhook?device_id=dev1&event=single_push"
+	for _, v := range []string{"a/b", "x:1", "with space", strings.Repeat("9", 65)} {
+		if resp, _ := do(t, "GET", base+"&value="+strings.ReplaceAll(v, " ", "%20"), "", nil); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("value %q accepted: %d", v, resp.StatusCode)
+		}
+	}
+	if resp, _ := do(t, "GET", base+"&value=12.5", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("numeric value rejected: %d", resp.StatusCode)
+	}
+}
+
+func TestBackupDownloadMasksSecretsAndRestoreKeepsThem(t *testing.T) {
+	ts, _ := newTestServer(t, `
+server:
+  webhook_token: hooksecret
+mqtt:
+  enabled: false
+  broker: tcp://b:1883
+  password: brokerpw
+shelly:
+  devices:
+    - id: d1
+      ip: 10.0.0.1
+      generation: 2
+      password: devpw
+`)
+	resp, body := do(t, "POST", ts.URL+"/api/backups", "", nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	var meta BackupMeta
+	_ = json.Unmarshal([]byte(body), &meta)
+
+	_, body = do(t, "GET", ts.URL+"/api/backups/"+meta.ID+"/download", "", nil)
+	for _, secret := range []string{"brokerpw", "devpw", "hooksecret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("download leaks %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, config.MaskedSecret) || !strings.Contains(body, "tcp://b:1883") {
+		t.Fatalf("download must contain masked secrets and the rest of the config: %s", body)
+	}
+
+	// Uploading the masked file and restoring it keeps the stored secrets.
+	resp, body = do(t, "POST", ts.URL+"/api/backups/upload", body, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: %d %s", resp.StatusCode, body)
+	}
+	var uploaded BackupMeta
+	_ = json.Unmarshal([]byte(body), &uploaded)
+	if resp, body := do(t, "POST", ts.URL+"/api/backups/"+uploaded.ID+"/restore", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("restore: %d %s", resp.StatusCode, body)
+	}
+	cfg := config.Get()
+	if cfg.MQTT.Password != "brokerpw" || cfg.Shelly.Devices[0].Password != "devpw" || cfg.Server.WebhookToken != "hooksecret" {
+		t.Fatalf("restore replaced secrets with the mask: %+v", cfg)
+	}
+}
+
+func TestMutationsReportSaveFailures(t *testing.T) {
+	ts, _ := newTestServer(t, "")
+	// Replace the config directory by a file so Save cannot write (also as root).
+	dir := filepath.Dir(config.GetPath())
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(dir) })
+
+	resp, body := do(t, "POST", ts.URL+"/api/mappings", `{"id":"m1","name":"A","loxone_id":"a","shelly_id":"s","enabled":true}`, nil)
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(body, "could not be saved") {
+		t.Fatalf("save failure not reported: %d %s", resp.StatusCode, body)
+	}
+	resp, body = do(t, "POST", ts.URL+"/api/shelly/add", `{"id":"d1","ip":"10.0.0.5"}`, nil)
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(body, "could not be saved") {
+		t.Fatalf("save failure not reported: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestExportOutputsIsWellFormedXML(t *testing.T) {
+	ts, _ := newTestServer(t, `
+mappings:
+  - id: m1
+    name: Dimmer
+    loxone_id: dim
+    shelly_id: dev1
+    shelly_type: dimmer
+    enabled: true
+  - id: m2
+    name: Roller
+    loxone_id: roll
+    shelly_id: dev2
+    shelly_type: roller
+    channel: 1
+    enabled: true
+`)
+	_, body := do(t, "GET", ts.URL+"/api/export/outputs", "", nil)
+	if strings.Contains(body, ":<v>") || !strings.Contains(body, `"brightness":&lt;v&gt;`) || !strings.Contains(body, `"position":&lt;v&gt;`) {
+		t.Fatalf("value placeholder must be escaped: %s", body)
+	}
+	if !strings.Contains(body, `Title="Roller_ch1 STOP"`) || !strings.Contains(body, `{"stop":true,"channel":1}`) {
+		t.Fatalf("roller export misses the stop command: %s", body)
+	}
+	var doc struct {
+		XMLName xml.Name `xml:"VirtualOut"`
+		Cmds    []struct {
+			Title string `xml:"Title,attr"`
+			Body  string `xml:"CmdOnBody,attr"`
+		} `xml:"VirtualOutCmd"`
+	}
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("export is not well-formed XML: %v", err)
+	}
+	for _, c := range doc.Cmds {
+		if strings.HasSuffix(c.Title, " BRI") && !strings.Contains(c.Body, `"brightness":<v>`) {
+			t.Fatalf("decoded body lost the placeholder: %q", c.Body)
+		}
+	}
+	// Inputs stay well-formed as well.
+	_, body = do(t, "GET", ts.URL+"/api/export/inputs", "", nil)
+	var in struct {
+		XMLName xml.Name `xml:"VirtualInUdp"`
+	}
+	if err := xml.Unmarshal([]byte(body), &in); err != nil {
+		t.Fatalf("input export is not well-formed XML: %v", err)
+	}
+}
+
+func TestSPAIndexGetsBaseHref(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<!doctype html><html><head><title>x</title></head><body>app</body></html>`), 0o600)
+	s := newStaticServer(t, dir)
+	go s.wsHub.Run()
+	t.Cleanup(s.wsHub.Stop)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, body := do(t, "GET", ts.URL+"/", "", nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `<head><base href="/">`) {
+		t.Fatalf("root base missing: %d %s", resp.StatusCode, body)
+	}
+	_, body = do(t, "GET", ts.URL+"/index.html", "", nil)
+	if !strings.Contains(body, `<base href="/">`) {
+		t.Fatalf("index.html must be served with a base: %s", body)
+	}
+	_, body = do(t, "GET", ts.URL+"/", "", map[string]string{"X-Ingress-Path": "/api/hassio_ingress/Abc-123_x"})
+	if !strings.Contains(body, `<base href="/api/hassio_ingress/Abc-123_x/">`) {
+		t.Fatalf("ingress base missing: %s", body)
+	}
+	_, body = do(t, "GET", ts.URL+"/", "", map[string]string{"X-Ingress-Path": `/bad"><script>`})
+	if !strings.Contains(body, `<base href="/">`) || strings.Contains(body, "<script>") {
+		t.Fatalf("invalid ingress path must be ignored: %s", body)
+	}
+	resp, body = do(t, "GET", ts.URL+"/api/health", "", nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"port":`) {
+		t.Fatalf("health must report the port: %d %s", resp.StatusCode, body)
 	}
 }
 

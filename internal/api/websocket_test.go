@@ -293,25 +293,17 @@ func TestDispatchEventHandlesEmptyEvents(t *testing.T) {
 	dispatchEvent(deps.Dispatcher, shelly.Event{DeviceID: "x"})
 }
 
-func TestWebhookTargetsSelection(t *testing.T) {
-	one := 1
-	mappings := []models.Mapping{
-		{ID: "dev", LoxoneID: "lox", ShellyID: "d"},
-		{ID: "ch1", LoxoneID: "lox_ch1", ShellyID: "d", Channel: &one},
-	}
-	got := webhookTargets(mappings, 1)
-	if len(got) != 1 || got[0].loxoneID != "lox_ch1" {
-		t.Fatalf("channel-specific mapping must win: %+v", got)
-	}
-	got = webhookTargets(mappings, 0)
-	if len(got) != 1 || got[0].loxoneID != "lox" {
-		t.Fatalf("channel 0 goes to the device-level mapping: %+v", got)
-	}
-	got = webhookTargets(mappings, 2)
-	if len(got) != 1 || got[0].loxoneID != "lox_2" {
-		t.Fatalf("unmapped channel falls back to suffixed device-level id: %+v", got)
-	}
-	if got := webhookTargets(nil, 0); len(got) != 0 {
-		t.Fatalf("no mappings, no targets: %+v", got)
+func TestWebSocketOriginBehindIngressProxy(t *testing.T) {
+	ts, _ := newTestServer(t, "")
+	// The HA ingress proxy forwards the user's HA origin; its X-Ingress-Path
+	// header marks the request as proxied.
+	h := http.Header{"Origin": []string{"http://homeassistant.local:8123"}, "X-Ingress-Path": []string{"/api/hassio_ingress/abc"}}
+	c := dialWS(t, ts, "", h)
+	c.Close()
+	h = http.Header{"Origin": []string{"http://proxy.local"}, "X-Forwarded-Host": []string{"proxy.local"}}
+	c = dialWS(t, ts, "", h)
+	c.Close()
+	if _, resp, err := websocket.DefaultDialer.Dial(wsURL(ts, ""), http.Header{"Origin": []string{"http://proxy.local"}}); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign origin without proxy headers must be rejected, got err=%v resp=%v", err, resp)
 	}
 }

@@ -16,7 +16,8 @@ describe('DeviceList', () => {
     expect(screen.getByText('Küche')).toBeInTheDocument();
     expect(screen.getByText('Flur')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/ }));
-    expect(onRefresh).toHaveBeenCalled();
+    // A manual refresh queries the devices live.
+    expect(onRefresh).toHaveBeenCalledWith(true);
   });
 
   it('filters by search and type', () => {

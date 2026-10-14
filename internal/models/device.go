@@ -90,6 +90,7 @@ type DeviceCommand struct {
 	Blue       *int     `json:"blue,omitempty"`
 	White      *int     `json:"white,omitempty"`
 	Position   *int     `json:"position,omitempty"`
+	Stop       *bool    `json:"stop,omitempty"`    // Stop a moving cover
 	Channel    *int     `json:"channel,omitempty"` // Target channel for multi-channel devices
 }
 

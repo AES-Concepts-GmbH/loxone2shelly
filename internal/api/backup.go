@@ -295,12 +295,20 @@ func readBackup(id string) (*BackupFile, []byte, int, string) {
 	return &bf, data, http.StatusOK, ""
 }
 
-// DownloadBackup downloads a backup file
+// DownloadBackup downloads a backup file. Secrets are masked like in
+// GET /api/config; restoring an uploaded masked backup keeps the currently
+// stored values.
 func (h *Handlers) DownloadBackup(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	_, data, status, msg := readBackup(id)
+	bf, _, status, msg := readBackup(id)
 	if status != http.StatusOK {
 		jsonError(w, status, msg)
+		return
+	}
+	bf.Config = snapshotConfig(backupToConfig(bf.Config).Masked())
+	data, err := json.MarshalIndent(bf, "", "  ")
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to serialize backup")
 		return
 	}
 
@@ -334,6 +342,8 @@ func (h *Handlers) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 	previous := config.Get()
 	cfg, err := config.Update(func(c *config.Config) error {
 		restored := backupToConfig(bf.Config)
+		// Masked secrets (from a downloaded backup) keep their stored values.
+		config.RestoreSecrets(restored, c)
 		// Keep the current listening address and API token so the UI stays reachable.
 		restored.Server.Port = c.Server.Port
 		restored.Server.Host = c.Server.Host

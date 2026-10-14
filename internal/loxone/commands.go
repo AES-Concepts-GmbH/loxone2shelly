@@ -42,6 +42,7 @@ func (p *CommandParser) ParseJSON(data []byte) (*models.LoxoneCommand, error) {
 //   - SET switch_1 OFF
 //   - SET dimmer_1 BRI 80
 //   - SET roller_1 POS 50
+//   - SET roller_1 OPEN / CLOSE / STOP
 //   - GET switch_1 STATUS
 func (p *CommandParser) ParseText(text string) (*models.LoxoneCommand, error) {
 	parts := strings.Fields(text)
@@ -90,8 +91,15 @@ func (p *CommandParser) ParseText(text string) (*models.LoxoneCommand, error) {
 				return nil, fmt.Errorf("invalid position value: %s (0-100)", parts[3])
 			}
 			cmd.Params["position"] = pos
+		// Covers: ON/OFF open and close as well; these are the explicit forms.
+		case "OPEN":
+			cmd.Params["on"] = true
+		case "CLOSE":
+			cmd.Params["on"] = false
+		case "STOP":
+			cmd.Params["stop"] = true
 		default:
-			return nil, fmt.Errorf("unknown action: %s (supported: ON, OFF, BRI, POS)", action)
+			return nil, fmt.Errorf("unknown action: %s (supported: ON, OFF, BRI, POS, OPEN, CLOSE, STOP)", action)
 		}
 
 	case "GET":
@@ -121,6 +129,10 @@ func (p *CommandParser) ToDeviceCommand(cmd *models.LoxoneCommand, channel *int)
 
 	if pos, ok := toInt(cmd.Params["position"]); ok {
 		dc.Position = &pos
+	}
+
+	if stop, ok := cmd.Params["stop"].(bool); ok && stop {
+		dc.Stop = &stop
 	}
 
 	// Color channels (0-255) and color temperature (Kelvin)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -286,6 +287,220 @@ func TestGen2OnFallsBackThroughMethods(t *testing.T) {
 	}
 	if err := c.SetDeviceState("dim", models.DeviceCommand{Red: intPtr(1), Green: intPtr(1), Blue: intPtr(1)}); err == nil {
 		t.Fatal("colour error must propagate")
+	}
+}
+
+// fakeGen2Cover emulates a Shelly Plus 2PM in cover profile and records RPC methods.
+func fakeGen2Cover(t *testing.T) (*httptest.Server, func() string) {
+	t.Helper()
+	var methods []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/rpc/Shelly.GetDeviceInfo":
+			_, _ = w.Write([]byte(`{"app":"Plus2PM","model":"SNSW-102P16EU"}`))
+		case "/rpc/Shelly.GetStatus":
+			_, _ = w.Write([]byte(`{"cover:0":{"id":0,"state":"stopped","current_pos":30,"apower":0}}`))
+		case "/rpc":
+			var req struct {
+				Method string                 `json:"method"`
+				Params map[string]interface{} `json:"params"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			methods = append(methods, req.Method)
+			mu.Unlock()
+			if !strings.HasPrefix(req.Method, "Cover.") {
+				_, _ = w.Write([]byte(`{"id":1,"error":{"code":404,"message":"No handler for ` + req.Method + `"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":1,"result":null}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(methods, ",")
+	}
+}
+
+func TestGen2CoverOpenCloseStop(t *testing.T) {
+	srv, methods := fakeGen2Cover(t)
+	c := NewClient()
+	defer c.Close()
+	c.AddDevice(DeviceSpec{ID: "cov", IP: hostOf(srv), Generation: 2})
+	dev, _ := c.GetDevice("cov")
+	if dev.Type != "roller" || !dev.Capabilities.SupportsRoller || dev.State.Position != 30 {
+		t.Fatalf("cover parse wrong: %+v", dev)
+	}
+
+	on, off, stop := true, false, true
+	for _, cmd := range []models.DeviceCommand{{On: &on}, {On: &off}, {Stop: &stop}, {Position: intPtr(50)}} {
+		if err := c.SetDeviceState("cov", cmd); err != nil {
+			t.Fatalf("command %+v: %v", cmd, err)
+		}
+	}
+	if got := methods(); got != "Cover.Open,Cover.Close,Cover.Stop,Cover.GoToPosition" {
+		t.Fatalf("methods = %s", got)
+	}
+	if err := c.SetDeviceState("cov", models.DeviceCommand{Stop: new(bool)}); err == nil {
+		t.Fatal("stop:false is not a command")
+	}
+}
+
+func TestGen1RollerOpenCloseStop(t *testing.T) {
+	f := &fakeGen1{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.paths = append(f.paths, r.URL.RequestURI())
+		f.mu.Unlock()
+		if r.URL.Path == "/status" {
+			_, _ = w.Write([]byte(`{"relays":[{"ison":false}],"rollers":[{"current_pos":40,"power":0}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"state":"open"}`))
+	}))
+	defer srv.Close()
+	c := NewClient()
+	defer c.Close()
+	c.AddDevice(DeviceSpec{ID: "r1", IP: hostOf(srv), Generation: 1})
+	if dev, _ := c.GetDevice("r1"); dev.Type != "roller" {
+		t.Fatalf("roller parse wrong: %+v", dev)
+	}
+	on, off, stop := true, false, true
+	for _, tc := range []struct {
+		cmd  models.DeviceCommand
+		want string
+	}{
+		{models.DeviceCommand{On: &on}, "/roller/0?go=open"},
+		{models.DeviceCommand{On: &off}, "/roller/0?go=close"},
+		{models.DeviceCommand{Stop: &stop}, "/roller/0?go=stop"},
+	} {
+		if err := c.SetDeviceState("r1", tc.cmd); err != nil {
+			t.Fatalf("command %+v: %v", tc.cmd, err)
+		}
+		if got := f.lastPath(); got != tc.want {
+			t.Fatalf("command %+v hit %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+// TestGen2TransportErrorDoesNotRetryOtherMethods: only an RPC error from the
+// device justifies trying the next component; a network failure returns at once.
+func TestGen2TransportErrorDoesNotRetryOtherMethods(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rpc" {
+			calls.Add(1)
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("hijack unsupported")
+			}
+			conn, _, _ := hj.Hijack()
+			conn.Close() // connection dropped -> transport error
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := NewClient()
+	defer c.Close()
+	c.AddDevice(DeviceSpec{ID: "x", IP: hostOf(srv), Generation: 2})
+	on := true
+	if err := c.SetDeviceState("x", models.DeviceCommand{On: &on}); err == nil || isRPCError(err) {
+		t.Fatalf("expected transport error, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("transport error must not fall back, got %d calls", calls.Load())
+	}
+}
+
+func TestApplyStateMergesIntoCache(t *testing.T) {
+	c := NewClient()
+	defer c.Close()
+	c.AddDevice(DeviceSpec{ID: "d", Generation: 2})
+	temp := 20.0
+	c.mu.Lock()
+	c.cache["d"] = &models.Device{
+		ID: "d", Type: "switch", Online: true,
+		State:    models.DeviceState{On: false, Power: 1, Temperature: &temp},
+		Channels: []models.Channel{{Index: 0, Type: "switch"}, {Index: 1, Type: "switch"}},
+	}
+	c.mu.Unlock()
+
+	if changed, known := c.ApplyState("nope", nil, map[string]interface{}{"on": true}); !changed || known {
+		t.Fatal("unknown device must be reported as unknown")
+	}
+	if changed, known := c.ApplyState("d", nil, nil); changed || known {
+		t.Fatal("empty state is a no-op")
+	}
+
+	// Device-level change updates state and baseline.
+	if changed, known := c.ApplyState("d", nil, map[string]interface{}{"on": true, "temperature": 21.5}); !changed || !known {
+		t.Fatal("expected a change")
+	}
+	dev, _ := c.GetDevice("d")
+	if !dev.State.On || *dev.State.Temperature != 21.5 || dev.State.Power != 1 {
+		t.Fatalf("merge wrong: %+v", dev.State)
+	}
+	if changed, _ := c.ApplyState("d", nil, map[string]interface{}{"on": true}); changed {
+		t.Fatal("same value must not count as change")
+	}
+
+	// Channel 1 only touches that channel; channel 0 mirrors the primary state.
+	if changed, _ := c.ApplyState("d", intPtr(1), map[string]interface{}{"on": true, "power": 7.5}); !changed {
+		t.Fatal("channel change expected")
+	}
+	dev, _ = c.GetDevice("d")
+	if !dev.Channels[1].On || dev.Channels[1].Power != 7.5 || dev.Channels[0].On || dev.State.Power != 1 {
+		t.Fatalf("channel merge wrong: %+v", dev)
+	}
+	if changed, _ := c.ApplyState("d", intPtr(0), map[string]interface{}{"on": false}); !changed {
+		t.Fatal("channel 0 change expected")
+	}
+	dev, _ = c.GetDevice("d")
+	if dev.Channels[0].On || dev.State.On {
+		t.Fatalf("channel 0 must mirror the primary state: %+v", dev)
+	}
+	// Unknown channel and incompatible types leave the cache alone but are forwarded.
+	if changed, known := c.ApplyState("d", intPtr(5), map[string]interface{}{"on": true}); !changed || !known {
+		t.Fatal("unknown channel must be forwarded")
+	}
+	if changed, _ := c.ApplyState("d", nil, map[string]interface{}{"on": "yes"}); !changed {
+		t.Fatal("incompatible value must be forwarded")
+	}
+	if dev, _ := c.GetDevice("d"); dev.State.On {
+		t.Fatal("failed merge must not alter the cache")
+	}
+
+	// The baseline follows the merge, so a poll reporting the same state is quiet.
+	c.mu.RLock()
+	last := c.lastStates["d"]
+	c.mu.RUnlock()
+	if last == nil {
+		t.Fatal("baseline not set")
+	}
+	c.emitChanges(dev)
+	select {
+	case ev := <-c.Events():
+		t.Fatalf("poll after MQTT merge must not emit: %+v", ev)
+	default:
+	}
+}
+
+func TestRefreshDoesNotResurrectRemovedDevice(t *testing.T) {
+	f := &fakeGen1{}
+	srv := f.server(t, "")
+	c := NewClient()
+	defer c.Close()
+	c.AddDevice(DeviceSpec{ID: "g1", IP: hostOf(srv), Generation: 1})
+	d, _ := c.deviceSnapshot("g1")
+	c.RemoveDevice("g1")
+	// A poll that started before the removal completes afterwards.
+	c.refreshDevice(d)
+	if len(c.GetInputs()) != 0 || len(c.GetDevices()) != 0 {
+		t.Fatal("removed device must not reappear in caches")
 	}
 }
 

@@ -1,6 +1,9 @@
 package mqttclient
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +11,147 @@ import (
 	"github.com/sbeyeler/loxone2shelly/internal/config"
 	"github.com/sbeyeler/loxone2shelly/internal/shelly"
 )
+
+// blockingClient emulates paho's Disconnect, which waits for in-flight
+// message handlers: a message arrives while disconnecting and its handler
+// needs the subscriber's lock.
+type blockingClient struct {
+	mqtt.Client
+	sub          *Subscriber
+	disconnected chan struct{}
+}
+
+func (b *blockingClient) IsConnectionOpen() bool { return true }
+
+func (b *blockingClient) Disconnect(uint) {
+	done := make(chan struct{})
+	go func() {
+		b.sub.handleMessage(nil, fakeMessage{topic: "shellies/cfg/relay/0", payload: []byte("on")})
+		close(done)
+	}()
+	<-done
+	close(b.disconnected)
+}
+
+// TestRestartDoesNotDeadlockWithInflightMessage is a regression test: Restart
+// and Close used to disconnect while holding the write lock, so a handler
+// blocked on the read lock kept paho's Disconnect from returning.
+func TestRestartDoesNotDeadlockWithInflightMessage(t *testing.T) {
+	sc := shelly.NewClient()
+	defer sc.Close()
+	s := NewSubscriber(sc)
+	s.SetDevices([]config.ShellyDeviceConfig{{ID: "cfg"}})
+	s.topicPrefix = "shellies"
+
+	for _, step := range []func(){
+		func() { _ = s.Restart(config.MQTTConfig{Enabled: false}) },
+		func() { s.Close() },
+	} {
+		bc := &blockingClient{sub: s, disconnected: make(chan struct{})}
+		s.mu.Lock()
+		s.client = bc
+		s.mu.Unlock()
+		if !s.IsConnected() {
+			t.Fatal("fake client must report connected")
+		}
+
+		finished := make(chan struct{})
+		go func() {
+			step()
+			close(finished)
+		}()
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Fatal("disconnect deadlocked with an in-flight message handler")
+		}
+		select {
+		case <-bc.disconnected:
+		default:
+			t.Fatal("old client was not disconnected")
+		}
+		if s.IsConnected() {
+			t.Fatal("client must be dropped")
+		}
+		// The in-flight message was still delivered.
+		select {
+		case ev := <-sc.Events():
+			if ev.DeviceID != "cfg" {
+				t.Fatalf("unexpected event %+v", ev)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("in-flight message was lost")
+		}
+	}
+}
+
+// TestStatusMessagesAreDeduplicatedAgainstCache: a status that matches the
+// cached device state is not forwarded, and one that changes it updates the
+// cache so the next poll stays quiet.
+func TestStatusMessagesAreDeduplicatedAgainstCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/rpc/Shelly.GetDeviceInfo":
+			_, _ = w.Write([]byte(`{"app":"Plus1PM"}`))
+		case "/rpc/Shelly.GetStatus":
+			_, _ = w.Write([]byte(`{"switch:0":{"id":0,"output":false,"apower":0}}`))
+		}
+	}))
+	defer srv.Close()
+
+	sc := shelly.NewClient()
+	defer sc.Close()
+	sc.AddDevice(shelly.DeviceSpec{ID: "plug", IP: strings.TrimPrefix(srv.URL, "http://"), Generation: 2})
+	if dev, _ := sc.GetDevice("plug"); !dev.Online {
+		t.Fatal("device must be cached online")
+	}
+
+	s := NewSubscriber(sc)
+	s.topicPrefix = "shellies"
+	s.SetDevices([]config.ShellyDeviceConfig{{ID: "plug"}})
+
+	// Same state as cached -> dropped.
+	s.handleMessage(nil, fakeMessage{topic: "shellies/plug/status/switch:0", payload: []byte(`{"id":0,"output":false,"apower":0}`)})
+	select {
+	case ev := <-sc.Events():
+		t.Fatalf("unchanged status must not be forwarded: %+v", ev)
+	default:
+	}
+
+	// A change is forwarded once and folded into the cache.
+	s.handleMessage(nil, fakeMessage{topic: "shellies/plug/status/switch:0", payload: []byte(`{"id":0,"output":true,"apower":12.5}`)})
+	select {
+	case ev := <-sc.Events():
+		if ev.DeviceID != "plug" || len(ev.Props) == 0 {
+			t.Fatalf("unexpected event %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("changed status must be forwarded")
+	}
+	if dev, _ := sc.GetDevice("plug"); !dev.State.On || dev.State.Power != 12.5 || !dev.Channels[0].On {
+		t.Fatalf("cache not updated from MQTT: %+v", dev)
+	}
+	s.handleMessage(nil, fakeMessage{topic: "shellies/plug/status/switch:0", payload: []byte(`{"id":0,"output":true,"apower":12.5}`)})
+	select {
+	case ev := <-sc.Events():
+		t.Fatalf("repeated status must not be forwarded: %+v", ev)
+	default:
+	}
+
+	// Input events are never filtered.
+	s.handleMessage(nil, fakeMessage{topic: "shellies/plug/status/input:0", payload: []byte(`{"id":0,"state":true}`)})
+	s.handleMessage(nil, fakeMessage{topic: "shellies/plug/status/input:0", payload: []byte(`{"id":0,"state":true}`)})
+	for i := 0; i < 2; i++ {
+		select {
+		case ev := <-sc.Events():
+			if ev.Type != "input" {
+				t.Fatalf("expected input event, got %+v", ev)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("input events must always be forwarded")
+		}
+	}
+}
 
 type fakeMessage struct {
 	topic   string

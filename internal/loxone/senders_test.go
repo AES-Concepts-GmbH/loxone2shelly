@@ -1,6 +1,7 @@
 package loxone
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,36 @@ func (r *httpRecorder) snapshot() (int, string, string) {
 	return r.hits, r.lastPath, r.lastAuth
 }
 
+// waitHits blocks until the recorder has seen n requests (sends are queued).
+func (r *httpRecorder) waitHits(t *testing.T, n int) (string, string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if hits, path, auth := r.snapshot(); hits >= n {
+			if hits > n {
+				t.Fatalf("expected %d requests, got %d", n, hits)
+			}
+			return path, auth
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	hits, _, _ := r.snapshot()
+	t.Fatalf("timed out waiting for %d requests (got %d)", n, hits)
+	return "", ""
+}
+
+// target returns the configured target for tests that call sendHTTP directly.
+func (s *HTTPSender) target(t *testing.T, id string) *httpTarget {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tg, ok := s.targets[id]
+	if !ok {
+		t.Fatalf("target %q not configured", id)
+	}
+	return tg
+}
+
 func TestHTTPSender(t *testing.T) {
 	rec := &httpRecorder{}
 	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
@@ -117,28 +148,23 @@ func TestHTTPSender(t *testing.T) {
 	}
 
 	s.Send("ms", "licht", "on", 1)
-	if hits, path, auth := rec.snapshot(); hits != 1 || path != "/dev/sps/io/licht_on/1" || !strings.HasPrefix(auth, "Basic ") {
-		t.Fatalf("send wrong: hits=%d path=%s auth=%s", hits, path, auth)
+	if path, auth := rec.waitHits(t, 1); path != "/dev/sps/io/licht_on/1" || !strings.HasPrefix(auth, "Basic ") {
+		t.Fatalf("send wrong: path=%s auth=%s", path, auth)
 	}
 	s.Send("unknown", "licht", "on", 1)
-	if hits, _, _ := rec.snapshot(); hits != 1 {
-		t.Fatal("unknown target must not send")
-	}
 	s.SendToAll("licht", "event", "a b")
-	if hits, path, _ := rec.snapshot(); hits != 2 || path != "/dev/sps/io/licht_event/a b" {
-		t.Fatalf("send_all wrong: %d %s", hits, path)
+	if path, _ := rec.waitHits(t, 2); path != "/dev/sps/io/licht_event/a b" {
+		t.Fatalf("send_all wrong: %s", path)
 	}
 	// Rejected responses are logged, not fatal.
 	s.Send("ms", "reject", "on", 1)
-	if hits, _, _ := rec.snapshot(); hits != 3 {
-		t.Fatal("rejected request should still be attempted")
-	}
+	rec.waitHits(t, 3)
 
 	// IP-only configuration builds an http:// base URL and sends without auth.
 	s.Configure([]config.MiniserverConfig{{ID: "ip", HTTPEnabled: true, IP: strings.TrimPrefix(srv.URL, "http://")}})
 	s.Send("ip", "x", "on", 0)
-	if hits, _, auth := rec.snapshot(); hits != 4 || auth != "" {
-		t.Fatalf("ip-only target wrong: hits=%d auth=%q", hits, auth)
+	if _, auth := rec.waitHits(t, 4); auth != "" {
+		t.Fatalf("ip-only target must send without auth, got %q", auth)
 	}
 	// Unreachable target: error is logged, call returns.
 	s.Configure([]config.MiniserverConfig{{ID: "down", HTTPEnabled: true, HTTPURL: "http://127.0.0.1:1"}})
@@ -146,6 +172,52 @@ func TestHTTPSender(t *testing.T) {
 	if !s.IsEnabled() || s.HasSendAll() {
 		t.Fatal("state after reconfigure wrong")
 	}
+	s.Close()
+	if s.IsEnabled() {
+		t.Fatal("closed sender must be disabled")
+	}
+}
+
+// TestHTTPSenderDoesNotBlockOnDeadMiniserver guards the event loop: sending to
+// an unreachable target must return immediately and must not delay other targets.
+func TestHTTPSenderDoesNotBlockOnDeadMiniserver(t *testing.T) {
+	rec := &httpRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	// 10.255.255.1 is unroutable in practice, so the request runs into the timeout.
+	s := NewHTTPSender()
+	s.Configure([]config.MiniserverConfig{
+		{ID: "dead", HTTPEnabled: true, HTTPURL: "http://10.255.255.1:9", SendAll: true},
+		{ID: "ok", HTTPEnabled: true, HTTPURL: srv.URL, SendAll: true},
+	})
+	defer s.Close()
+
+	start := time.Now()
+	for i := 0; i < 20; i++ {
+		s.SendToAll("licht", "power", i)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("SendToAll blocked for %v", elapsed)
+	}
+	// The healthy target still receives everything while the dead one hangs.
+	rec.waitHits(t, 20)
+}
+
+func TestWorkerDropsWhenFull(t *testing.T) {
+	block := make(chan struct{})
+	w := newWorker("t", 1)
+	defer w.close()
+	// The first job occupies the goroutine, the second fills the queue; the
+	// third must be dropped instead of blocking.
+	w.submit(func() { <-block })
+	w.submit(func() {})
+	if w.submit(func() {}) {
+		t.Fatal("full queue must reject jobs")
+	}
+	close(block)
+	w.close()
+	w.close() // idempotent
 }
 
 func TestHTTPSenderInsecureTLS(t *testing.T) {
@@ -155,17 +227,19 @@ func TestHTTPSenderInsecureTLS(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// sendHTTP is called directly so the outcome is observed synchronously.
 	s := NewHTTPSender()
 	s.Configure([]config.MiniserverConfig{{ID: "ms", HTTPEnabled: true, HTTPURL: srv.URL}})
-	s.Send("ms", "a", "on", 1)
+	s.sendHTTP(s.target(t, "ms"), "a", "on", 1)
 	if hits.Load() != 0 {
 		t.Fatal("TLS verification must be enforced by default")
 	}
 	s.Configure([]config.MiniserverConfig{{ID: "ms", HTTPEnabled: true, HTTPURL: srv.URL, HTTPInsecureTLS: true}})
-	s.Send("ms", "a", "on", 1)
+	s.sendHTTP(s.target(t, "ms"), "a", "on", 1)
 	if hits.Load() != 1 {
 		t.Fatal("insecure TLS opt-in did not work")
 	}
+	s.Close()
 }
 
 func TestMQTTSenderWithoutBroker(t *testing.T) {
@@ -202,6 +276,8 @@ func TestMQTTSenderWithoutBroker(t *testing.T) {
 	s.Send("ms", "a", "on", 1)
 	s.Send("unknown", "a", "on", 1)
 	s.SendToAll("a", "on", 1)
+	// publish itself skips while disconnected.
+	publish(nil, &mqttTarget{name: "x"}, "a", "on", 1)
 
 	// Reconfiguring replaces the client without blocking.
 	s.Configure(config.MQTTConfig{Enabled: true, Broker: "tcp://127.0.0.1:1", ClientID: "t2"}, []config.MiniserverConfig{{ID: "ms", MQTTEnabled: true}})
@@ -246,6 +322,46 @@ func TestDispatcherSendsDeviceLevelAndChannelProps(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s in %s", want, joined)
 		}
+	}
+}
+
+func TestMappingManagerTargetsForChannel(t *testing.T) {
+	m := NewMappingManager()
+	m.Load([]models.Mapping{
+		{ID: "dev", LoxoneID: "lox", ShellyID: "d", Enabled: true},
+		{ID: "ch1", LoxoneID: "lox_ch1", ShellyID: "d", Enabled: true, Channel: intp(1)},
+	})
+	ids := func(ts []Target) []string {
+		out := make([]string, 0, len(ts))
+		for _, x := range ts {
+			out = append(out, x.LoxoneID)
+		}
+		return out
+	}
+	if got := ids(m.TargetsForChannel("d", intp(1))); fmt.Sprint(got) != "[lox_ch1]" {
+		t.Fatalf("channel-specific mapping must win: %v", got)
+	}
+	if got := ids(m.TargetsForChannel("d", intp(0))); fmt.Sprint(got) != "[lox]" {
+		t.Fatalf("channel 0 goes to the device-level mapping: %v", got)
+	}
+	if got := ids(m.TargetsForChannel("d", nil)); fmt.Sprint(got) != "[lox]" {
+		t.Fatalf("device-level update goes to the device-level mapping: %v", got)
+	}
+	// An unmapped channel reaches the device-level mapping with a suffix, the
+	// same way webhook events do.
+	if got := ids(m.TargetsForChannel("d", intp(2))); fmt.Sprint(got) != "[lox_2]" {
+		t.Fatalf("unmapped channel falls back to suffixed device-level id: %v", got)
+	}
+	if got := m.TargetsForChannel("other", intp(0)); len(got) != 0 {
+		t.Fatalf("no mappings, no targets: %+v", got)
+	}
+
+	// The dispatcher applies the same rule for polled state.
+	rec := &recordingSender{}
+	d := NewDispatcher(m, rec, nil, nil)
+	d.DispatchProps("d", intp(2), []models.Prop{{Name: "on", Value: 1}})
+	if fmt.Sprint(rec.sent) != "[*:lox_2/on:1]" {
+		t.Fatalf("dispatcher sent %v", rec.sent)
 	}
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { WSMessage } from '../types';
 import { getToken } from '../services/api';
+import { wsUrl } from '../utils/base';
 
 interface UseWebSocketOptions {
   onMessage?: (message: WSMessage) => void;
@@ -30,12 +31,8 @@ export function useWebSocket(options?: UseWebSocketOptions) {
     if (unmountedRef.current) return;
     if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = getToken();
-    const wsUrl = `${protocol}//${window.location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-
     try {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl(getToken()));
       wsRef.current = ws;
 
       ws.onopen = () => {
