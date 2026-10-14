@@ -44,8 +44,8 @@ func (d *Dispatcher) DispatchProps(deviceID string, channel *int, props []models
 	if len(props) == 0 {
 		return
 	}
-	for _, mapping := range d.mappings.GetForChannel(deviceID, channel) {
-		d.SendToMapping(&mapping, mapping.LoxoneID, props)
+	for _, t := range d.mappings.TargetsForChannel(deviceID, channel) {
+		d.SendToMapping(&t.Mapping, t.LoxoneID, props)
 	}
 }
 

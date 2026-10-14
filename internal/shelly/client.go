@@ -3,9 +3,11 @@ package shelly
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -270,13 +272,94 @@ func (c *Client) refreshDevices(infos []DeviceInfo) []*models.Device {
 func (c *Client) refreshDevice(d DeviceInfo) *models.Device {
 	device, inputs := c.queryDevice(&d)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The device may have been removed while the query was in flight; do not
+	// resurrect its cache entries.
+	if _, ok := c.devices[d.ConfigID]; !ok {
+		return device
+	}
 	c.cache[d.ConfigID] = cloneDevice(device)
 	if device.Online {
 		c.inputCache[d.ConfigID] = inputs
 		c.seedBaselineLocked(device)
 	}
-	c.mu.Unlock()
 	return device
+}
+
+// ApplyState merges a partial state update (as reported via MQTT) into the
+// cached device and the change-detection baseline, so the next poll does not
+// report the same change again. changed reports whether anything differed from
+// the cache; known is false when the device has not been polled yet, in which
+// case the caller should forward the update unfiltered.
+func (c *Client) ApplyState(deviceID string, channel *int, state map[string]interface{}) (changed, known bool) {
+	if len(state) == 0 {
+		return false, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cached, ok := c.cache[deviceID]
+	if !ok {
+		return true, false
+	}
+
+	merged := cloneDevice(cached)
+	applied := false
+	if channel == nil {
+		applied = mergeJSON(&merged.State, state) == nil
+	} else {
+		for i := range merged.Channels {
+			if merged.Channels[i].Index == *channel {
+				applied = mergeJSON(&merged.Channels[i], state) == nil
+				break
+			}
+		}
+		// Channel 0 mirrors the primary state; devices without a channel list
+		// only have the primary state.
+		if *channel == 0 || len(merged.Channels) == 0 {
+			if mergeJSON(&merged.State, state) == nil {
+				applied = true
+			}
+		}
+	}
+	if !applied {
+		return true, true
+	}
+
+	after := stateToMap(merged)
+	if reflect.DeepEqual(stateToMap(cached), after) {
+		return false, true
+	}
+
+	c.cache[deviceID] = merged
+	c.lastStates[deviceID] = after
+	if len(merged.Channels) > 1 {
+		for _, ch := range merged.Channels {
+			c.chanStates[channelKey(deviceID, ch.Index)] = stateToMap(ch)
+		}
+	}
+	return true, true
+}
+
+// mergeJSON overlays the keys of patch onto dst through its JSON form, so the
+// UI field names of a partial update map onto the struct's json tags.
+func mergeJSON(dst interface{}, patch map[string]interface{}) error {
+	data, err := json.Marshal(dst)
+	if err != nil {
+		return err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	for k, v := range patch {
+		m[k] = v
+	}
+	data, err = json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, dst)
 }
 
 // GetDevice returns the last known state of a device by config ID.
@@ -337,10 +420,26 @@ func validateCommand(cmd models.DeviceCommand) error {
 		}
 	}
 	if cmd.On == nil && cmd.Brightness == nil && cmd.Position == nil && cmd.ColorTemp == nil &&
-		cmd.Red == nil && cmd.Green == nil && cmd.Blue == nil && cmd.White == nil {
+		cmd.Red == nil && cmd.Green == nil && cmd.Blue == nil && cmd.White == nil &&
+		(cmd.Stop == nil || !*cmd.Stop) {
 		return fmt.Errorf("no actionable command")
 	}
 	return nil
+}
+
+// isCover reports whether a command for the given channel addresses a cover
+// (roller) component, based on the cached device type.
+func (c *Client) isCover(id string, channel int) bool {
+	cached, err := c.GetDevice(id)
+	if err != nil {
+		return false
+	}
+	for _, ch := range cached.Channels {
+		if ch.Index == channel {
+			return ch.Type == "cover"
+		}
+	}
+	return cached.Type == "roller" || cached.Capabilities.SupportsRoller
 }
 
 // GetInputs returns the last known inputs (buttons/switches) of all devices.
@@ -511,12 +610,29 @@ func (c *Client) rpcPost(d *DeviceInfo, method string, payload interface{}) (map
 	}
 
 	if rpcErr, ok := rpcResp["error"].(map[string]interface{}); ok {
-		return nil, fmt.Errorf("RPC error for %s: %v", method, rpcErr["message"])
+		return nil, &rpcError{method: method, message: fmt.Sprintf("%v", rpcErr["message"])}
 	}
 	if result, ok := rpcResp["result"].(map[string]interface{}); ok {
 		return result, nil
 	}
 	return rpcResp, nil
+}
+
+// rpcError is an error reported by the device itself (as opposed to a
+// transport failure), e.g. because the component does not exist.
+type rpcError struct {
+	method  string
+	message string
+}
+
+func (e *rpcError) Error() string {
+	return fmt.Sprintf("RPC error for %s: %s", e.method, e.message)
+}
+
+// isRPCError reports whether the device answered with an RPC error.
+func isRPCError(err error) bool {
+	var re *rpcError
+	return errors.As(err, &re)
 }
 
 // --- Gen1 HTTP helpers ---
@@ -668,6 +784,14 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 		return nil
 	}
 
+	if cmd.Stop != nil && *cmd.Stop {
+		if _, err := c.rpcPost(dev, "Cover.Stop", map[string]interface{}{"id": channelID}); err != nil {
+			return fmt.Errorf("cover stop failed for %s: %w", dev.ConfigID, err)
+		}
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Msg("Cover stopped (Gen2)")
+		return nil
+	}
+
 	if cmd.Position != nil {
 		payload := map[string]interface{}{
 			"id":  channelID,
@@ -703,6 +827,19 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 	}
 
 	if cmd.On != nil {
+		// Covers have no on/off; ON opens and OFF closes.
+		if c.isCover(dev.ConfigID, channelID) {
+			method := "Cover.Close"
+			if *cmd.On {
+				method = "Cover.Open"
+			}
+			if _, err := c.rpcPost(dev, method, map[string]interface{}{"id": channelID}); err != nil {
+				return fmt.Errorf("cover command failed for %s: %w", dev.ConfigID, err)
+			}
+			log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Str("method", method).Msg("Cover moved (Gen2)")
+			return nil
+		}
+
 		payload := map[string]interface{}{
 			"id": channelID,
 			"on": *cmd.On,
@@ -721,11 +858,16 @@ func (c *Client) setDeviceStateGen2(dev *DeviceInfo, cmd models.DeviceCommand) e
 		}
 		var lastErr error
 		for _, m := range methods {
-			if _, err := c.rpcPost(dev, m, payload); err == nil {
+			_, err := c.rpcPost(dev, m, payload)
+			if err == nil {
 				log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Bool("on", *cmd.On).Str("method", m).Msg("Output set (Gen2)")
 				return nil
-			} else {
-				lastErr = err
+			}
+			lastErr = err
+			// Only an answer from the device justifies trying the next
+			// component; a transport failure would just double the timeout.
+			if !isRPCError(err) {
+				break
 			}
 		}
 		return fmt.Errorf("switch/light command failed for %s: %w", dev.ConfigID, lastErr)
@@ -768,6 +910,14 @@ func (c *Client) setDeviceStateGen1(dev *DeviceInfo, cmd models.DeviceCommand) e
 		return nil
 	}
 
+	if cmd.Stop != nil && *cmd.Stop {
+		if _, err := c.gen1Get(dev, fmt.Sprintf("roller/%d?go=stop", channelID)); err != nil {
+			return fmt.Errorf("roller stop failed for %s: %w", dev.ConfigID, err)
+		}
+		log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Msg("Roller stopped (Gen1)")
+		return nil
+	}
+
 	if cmd.Position != nil {
 		path := fmt.Sprintf("roller/%d?go=to_pos&roller_pos=%d", channelID, *cmd.Position)
 		if _, err := c.gen1Get(dev, path); err != nil {
@@ -793,6 +943,19 @@ func (c *Client) setDeviceStateGen1(dev *DeviceInfo, cmd models.DeviceCommand) e
 	}
 
 	if cmd.On != nil {
+		// Rollers have no on/off; ON opens and OFF closes.
+		if c.isCover(dev.ConfigID, channelID) {
+			dir := "close"
+			if *cmd.On {
+				dir = "open"
+			}
+			if _, err := c.gen1Get(dev, fmt.Sprintf("roller/%d?go=%s", channelID, dir)); err != nil {
+				return fmt.Errorf("roller command failed for %s: %w", dev.ConfigID, err)
+			}
+			log.Info().Str("id", dev.ConfigID).Int("channel", channelID).Str("go", dir).Msg("Roller moved (Gen1)")
+			return nil
+		}
+
 		component := "relay"
 		if cached, err := c.GetDevice(dev.ConfigID); err == nil {
 			switch cached.Type {

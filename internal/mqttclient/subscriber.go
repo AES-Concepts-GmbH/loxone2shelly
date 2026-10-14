@@ -81,25 +81,19 @@ func (s *Subscriber) SetDevices(devices []config.ShellyDeviceConfig) {
 // Start connects to the MQTT broker in the background and subscribes to Shelly
 // topics once connected. It returns immediately; connection problems are logged.
 func (s *Subscriber) Start(cfg config.MQTTConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.client != nil {
-		s.client.Disconnect(250)
-		s.client = nil
-	}
 	if !cfg.Enabled {
+		s.swapClient(nil, "", 250)
 		return nil
 	}
 	if cfg.Broker == "" {
+		s.swapClient(nil, "", 250)
 		return fmt.Errorf("mqtt broker address is empty")
 	}
 
-	s.topicPrefix = cfg.TopicPrefix
-	if s.topicPrefix == "" {
-		s.topicPrefix = "shellies"
+	prefix := cfg.TopicPrefix
+	if prefix == "" {
+		prefix = "shellies"
 	}
-	prefix := s.topicPrefix
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.Broker).
@@ -124,7 +118,7 @@ func (s *Subscriber) Start(cfg config.MQTTConfig) error {
 	}
 
 	client := mqtt.NewClient(opts)
-	s.client = client
+	s.swapClient(client, prefix, 250)
 
 	token := client.Connect()
 	go func() {
@@ -136,6 +130,24 @@ func (s *Subscriber) Start(cfg config.MQTTConfig) error {
 
 	log.Info().Str("broker", cfg.Broker).Str("prefix", prefix).Msg("MQTT subscriber starting")
 	return nil
+}
+
+// swapClient installs next as the active client and disconnects the previous
+// one. The disconnect happens outside the lock: paho waits for in-flight
+// message handlers, and handleMessage needs the read lock, so disconnecting
+// under the write lock would deadlock whenever a message arrives meanwhile.
+func (s *Subscriber) swapClient(next mqtt.Client, prefix string, quiesce uint) {
+	s.mu.Lock()
+	old := s.client
+	s.client = next
+	if prefix != "" {
+		s.topicPrefix = prefix
+	}
+	s.mu.Unlock()
+
+	if old != nil {
+		old.Disconnect(quiesce)
+	}
 }
 
 // Restart applies a new MQTT configuration.
@@ -166,11 +178,12 @@ func subscribe(c mqtt.Client, prefix string, handler mqtt.MessageHandler) {
 
 // Close disconnects from the MQTT broker.
 func (s *Subscriber) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.client != nil {
-		s.client.Disconnect(1000)
-		s.client = nil
+	s.mu.RLock()
+	hadClient := s.client != nil
+	s.mu.RUnlock()
+
+	s.swapClient(nil, "", 1000)
+	if hadClient {
 		log.Info().Msg("MQTT subscriber stopped")
 	}
 }
@@ -206,6 +219,17 @@ func (s *Subscriber) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 	}
 
 	for _, ev := range ParseMessage(configID, subTopic, payload) {
+		// Fold the update into the cached device state so the next poll does
+		// not report the same change a second time, and drop status messages
+		// that carry nothing new. Input events are always forwarded.
+		if ev.Type != "input" {
+			if st, ok := ev.State.(map[string]interface{}); ok {
+				if changed, known := s.shellyClient.ApplyState(ev.DeviceID, ev.Channel, st); known && !changed {
+					log.Debug().Str("id", configID).Str("topic", topic).Msg("MQTT status unchanged, skipping")
+					continue
+				}
+			}
+		}
 		s.shellyClient.PushEvent(ev)
 	}
 }

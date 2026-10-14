@@ -169,9 +169,47 @@ func TestConcurrentAccessIsRaceFree(t *testing.T) {
 
 func TestEnvTokenOverridesFile(t *testing.T) {
 	t.Setenv("L2S_API_TOKEN", "fromenv")
-	loadTemp(t, "server:\n  api_token: fromfile\n")
+	path := loadTemp(t, "server:\n  api_token: fromfile\n")
 	if GetServer().APIToken != "fromenv" {
 		t.Fatal("environment token must win")
+	}
+
+	// The environment token is never written to disk; the file keeps its own.
+	if err := Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "fromenv") || !strings.Contains(string(data), "api_token: fromfile") {
+		t.Fatalf("env token leaked into the file:\n%s", data)
+	}
+	if GetServer().APIToken != "fromenv" {
+		t.Fatal("Save must not change the runtime token")
+	}
+
+	// A token changed at runtime is persisted as usual.
+	if _, err := Update(func(c *Config) error { c.Server.APIToken = "changed"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "api_token: changed") {
+		t.Fatalf("runtime token not persisted:\n%s", data)
+	}
+
+	// Without the variable the file's token is used and persisted as is.
+	t.Setenv("L2S_API_TOKEN", "")
+	path = loadTemp(t, "server:\n  api_token: plain\n")
+	if GetServer().APIToken != "plain" {
+		t.Fatal("file token must apply without env override")
+	}
+	if err := Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "api_token: plain") {
+		t.Fatalf("file token lost:\n%s", data)
 	}
 }
 

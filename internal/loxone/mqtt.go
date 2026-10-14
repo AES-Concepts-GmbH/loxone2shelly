@@ -13,6 +13,7 @@ import (
 const (
 	mqttConnectTimeout = 10 * time.Second
 	mqttPublishTimeout = 5 * time.Second
+	mqttQueueSize      = 1024
 )
 
 // mqttTarget represents a Miniserver receiving feedback via MQTT
@@ -28,12 +29,15 @@ type MQTTSender struct {
 	client  mqtt.Client
 	targets map[string]*mqttTarget // key = MiniserverConfig.ID
 	mu      sync.Mutex
+	// queue serialises publishes so a slow broker never blocks the event loop.
+	queue *worker
 }
 
 // NewMQTTSender creates a new MQTT sender (initially disconnected).
 func NewMQTTSender() *MQTTSender {
 	return &MQTTSender{
 		targets: make(map[string]*mqttTarget),
+		queue:   newWorker("mqtt", mqttQueueSize),
 	}
 }
 
@@ -137,7 +141,7 @@ func (s *MQTTSender) HasSendAll() bool {
 	return false
 }
 
-// Send publishes a property update for a specific Miniserver.
+// Send queues a property update for a specific Miniserver.
 // Topic: <prefix>/<loxone_id>/<property>  Payload: <value>
 func (s *MQTTSender) Send(miniserverID, loxoneID, property string, value interface{}) {
 	s.mu.Lock()
@@ -149,10 +153,10 @@ func (s *MQTTSender) Send(miniserverID, loxoneID, property string, value interfa
 		return
 	}
 
-	publish(client, t, loxoneID, property, value)
+	s.queue.submit(func() { publish(client, t, loxoneID, property, value) })
 }
 
-// SendToAll publishes a property update to all Miniservers with send_all enabled.
+// SendToAll queues a property update for all Miniservers with send_all enabled.
 func (s *MQTTSender) SendToAll(loxoneID, property string, value interface{}) {
 	s.mu.Lock()
 	targets := make([]*mqttTarget, 0)
@@ -165,7 +169,7 @@ func (s *MQTTSender) SendToAll(loxoneID, property string, value interface{}) {
 	s.mu.Unlock()
 
 	for _, t := range targets {
-		publish(client, t, loxoneID, property, value)
+		s.queue.submit(func() { publish(client, t, loxoneID, property, value) })
 	}
 }
 
@@ -191,11 +195,12 @@ func publish(client mqtt.Client, t *mqttTarget, loxoneID, property string, value
 	log.Debug().Str("miniserver", t.name).Str("topic", topic).Str("payload", payload).Msg("MQTT feedback published")
 }
 
-// Close disconnects the MQTT client.
+// Close disconnects the MQTT client and stops the publish queue.
 func (s *MQTTSender) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.queue.close()
 	if s.client != nil {
 		s.client.Disconnect(1000)
 		s.client = nil

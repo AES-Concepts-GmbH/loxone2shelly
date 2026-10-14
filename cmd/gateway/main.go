@@ -47,6 +47,9 @@ func main() {
 	if cfg.Server.APIToken == "" {
 		log.Warn().Msg("No API token configured (server.api_token / L2S_API_TOKEN): the API and Web UI are unauthenticated")
 	}
+	if cfg.Server.WebhookToken == "" {
+		log.Warn().Msg("No webhook token configured (server.webhook_token): /api/webhook accepts unauthenticated calls")
+	}
 
 	// Shelly client
 	shellyClient := shelly.NewClient()
@@ -128,6 +131,7 @@ func main() {
 	mqttSub.Close()
 	shellyClient.Close()
 	udpSender.Close()
+	httpSender.Close()
 	mqttSender.Close()
 
 	log.Info().Msg("Loxone2Shelly Gateway stopped")

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -140,17 +142,42 @@ type spaHandler struct {
 	indexPath  string
 }
 
+// ingressPathPattern accepts the path prefix a reverse proxy reports in
+// X-Ingress-Path (Home Assistant: /api/hassio_ingress/<token>).
+var ingressPathPattern = regexp.MustCompile(`^/[A-Za-z0-9_./-]{1,256}$`)
+
 func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rel := filepath.Clean("/" + r.URL.Path)
 	path := filepath.Join(h.staticPath, rel)
 
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
+	if err != nil || info.IsDir() || rel == "/"+h.indexPath {
+		h.serveIndex(w, r)
 		return
 	}
 
 	http.FileServer(http.Dir(h.staticPath)).ServeHTTP(w, r)
+}
+
+// serveIndex serves the SPA entry point with a <base href>, so the relative
+// asset, API and WebSocket URLs of the UI resolve both at the root and behind
+// a path prefix such as the Home Assistant ingress proxy.
+func (h spaHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(filepath.Join(h.staticPath, h.indexPath))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	base := "/"
+	if p := r.Header.Get("X-Ingress-Path"); ingressPathPattern.MatchString(p) {
+		base = strings.TrimRight(p, "/") + "/"
+	}
+	page := strings.Replace(string(data), "<head>", `<head><base href="`+html.EscapeString(base)+`">`, 1)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write([]byte(page))
 }
 
 // Start starts the HTTP server
@@ -226,16 +253,23 @@ func authMiddleware(next http.Handler) http.Handler {
 }
 
 // originAllowed reports whether a browser origin may use the API.
-// Same-origin requests and configured origins are allowed.
+// Same-origin requests (also behind a reverse proxy) and configured origins
+// are allowed.
 func originAllowed(r *http.Request, origin string) bool {
 	if origin == "" {
+		return true
+	}
+	// Requests proxied by the Home Assistant ingress carry the user's HA
+	// origin; HA has already authenticated them. Browsers cannot set this
+	// header themselves.
+	if r.Header.Get("X-Ingress-Path") != "" {
 		return true
 	}
 	u, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	if strings.EqualFold(u.Host, r.Host) {
+	if strings.EqualFold(u.Host, r.Host) || strings.EqualFold(u.Host, r.Header.Get("X-Forwarded-Host")) {
 		return true
 	}
 	for _, allowed := range config.GetServer().CORSOrigins {

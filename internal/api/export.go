@@ -137,15 +137,20 @@ func (h *Handlers) ExportVirtualOutputs(w http.ResponseWriter, r *http.Request) 
 
 		fmt.Fprintf(&sb, "  <!-- WebSocket: SET %s ON | SET %s OFF -->\n", xmlAttr(m.LoxoneID), xmlAttr(m.LoxoneID))
 
+		// Loxone's "<v>" placeholder must be escaped inside an XML attribute,
+		// exactly like Loxone's own templates do.
 		switch m.ShellyType {
 		case "dimmer", "light", "rgb", "rgbw":
-			fmt.Fprintf(&sb, `  <VirtualOutCmd Title="%s BRI" CmdOnMethod="PUT" CmdOn="%s" CmdOnBody='{"on":true,"brightness":<v>%s}'/>`+"\n",
+			fmt.Fprintf(&sb, `  <VirtualOutCmd Title="%s BRI" CmdOnMethod="PUT" CmdOn="%s" CmdOnBody='{"on":true,"brightness":&lt;v&gt;%s}'/>`+"\n",
 				xmlAttr(name), xmlAttr(path), channel)
 			fmt.Fprintf(&sb, "  <!-- WebSocket: SET %s BRI <value> -->\n", xmlAttr(m.LoxoneID))
 		case "roller", "cover":
-			fmt.Fprintf(&sb, `  <VirtualOutCmd Title="%s POS" CmdOnMethod="PUT" CmdOn="%s" CmdOnBody='{"position":<v>%s}'/>`+"\n",
+			fmt.Fprintf(&sb, `  <VirtualOutCmd Title="%s POS" CmdOnMethod="PUT" CmdOn="%s" CmdOnBody='{"position":&lt;v&gt;%s}'/>`+"\n",
 				xmlAttr(name), xmlAttr(path), channel)
-			fmt.Fprintf(&sb, "  <!-- WebSocket: SET %s POS <value> -->\n", xmlAttr(m.LoxoneID))
+			fmt.Fprintf(&sb, `  <VirtualOutCmd Title="%s STOP" CmdOnMethod="PUT" CmdOn="%s" CmdOnBody='{"stop":true%s}'/>`+"\n",
+				xmlAttr(name), xmlAttr(path), channel)
+			fmt.Fprintf(&sb, "  <!-- WebSocket: SET %s POS <value> | SET %s OPEN | SET %s CLOSE | SET %s STOP (ON/OFF open and close) -->\n",
+				xmlAttr(m.LoxoneID), xmlAttr(m.LoxoneID), xmlAttr(m.LoxoneID), xmlAttr(m.LoxoneID))
 		}
 	}
 

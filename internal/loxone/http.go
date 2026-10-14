@@ -13,6 +13,9 @@ import (
 	"github.com/sbeyeler/loxone2shelly/internal/config"
 )
 
+// httpQueueSize bounds the number of pending requests per Miniserver.
+const httpQueueSize = 256
+
 // httpTarget represents a single HTTP connection to a Miniserver
 type httpTarget struct {
 	baseURL  string
@@ -21,6 +24,9 @@ type httpTarget struct {
 	sendAll  bool
 	name     string
 	client   *http.Client
+	// queue serialises requests per Miniserver so an unreachable one only
+	// delays its own feedback.
+	queue *worker
 }
 
 // HTTPSender sends status updates to one or more Loxone Miniservers via HTTP
@@ -49,10 +55,7 @@ func (s *HTTPSender) Configure(miniservers []config.MiniserverConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, t := range s.targets {
-		t.client.CloseIdleConnections()
-	}
-	s.targets = make(map[string]*httpTarget)
+	s.closeTargetsLocked()
 
 	for _, ms := range miniservers {
 		if !ms.HTTPEnabled {
@@ -74,10 +77,26 @@ func (s *HTTPSender) Configure(miniservers []config.MiniserverConfig) {
 			sendAll:  ms.SendAll,
 			name:     ms.Name,
 			client:   newHTTPClient(ms.HTTPInsecureTLS),
+			queue:    newWorker("http:"+ms.ID, httpQueueSize),
 		}
 
 		log.Info().Str("id", ms.ID).Str("name", ms.Name).Str("url", baseURL).Bool("insecure_tls", ms.HTTPInsecureTLS).Msg("HTTP feedback configured for miniserver")
 	}
+}
+
+func (s *HTTPSender) closeTargetsLocked() {
+	for _, t := range s.targets {
+		t.queue.close()
+		t.client.CloseIdleConnections()
+	}
+	s.targets = make(map[string]*httpTarget)
+}
+
+// Close stops all queue workers.
+func (s *HTTPSender) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeTargetsLocked()
 }
 
 // IsEnabled returns whether at least one HTTP target is active
@@ -99,7 +118,8 @@ func (s *HTTPSender) HasSendAll() bool {
 	return false
 }
 
-// Send sends a single property update to a specific Miniserver via HTTP.
+// Send queues a single property update for a specific Miniserver. It never
+// blocks; the request is performed by the target's worker.
 func (s *HTTPSender) Send(miniserverID, loxoneID, property string, value interface{}) {
 	s.mu.Lock()
 	t, ok := s.targets[miniserverID]
@@ -109,10 +129,10 @@ func (s *HTTPSender) Send(miniserverID, loxoneID, property string, value interfa
 		return
 	}
 
-	s.sendHTTP(t, loxoneID, property, value)
+	s.enqueue(t, loxoneID, property, value)
 }
 
-// SendToAll sends a single property update to all Miniservers that have send_all enabled.
+// SendToAll queues a single property update for all Miniservers that have send_all enabled.
 func (s *HTTPSender) SendToAll(loxoneID, property string, value interface{}) {
 	s.mu.Lock()
 	targets := make([]*httpTarget, 0)
@@ -124,8 +144,12 @@ func (s *HTTPSender) SendToAll(loxoneID, property string, value interface{}) {
 	s.mu.Unlock()
 
 	for _, t := range targets {
-		s.sendHTTP(t, loxoneID, property, value)
+		s.enqueue(t, loxoneID, property, value)
 	}
+}
+
+func (s *HTTPSender) enqueue(t *httpTarget, loxoneID, property string, value interface{}) {
+	t.queue.submit(func() { s.sendHTTP(t, loxoneID, property, value) })
 }
 
 // FeedbackURL builds the Loxone Virtual Input URL for a property update.

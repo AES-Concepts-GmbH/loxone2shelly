@@ -48,7 +48,20 @@ func jsonError(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
 }
 
-// decodeJSON decodes a request body with a size limit and strict field checking.
+// persistConfig saves the configuration and reports a failure to the client.
+// The change has already been applied in memory at this point, so the client
+// is told that only the persistence step failed.
+func persistConfig(w http.ResponseWriter, what string) bool {
+	if err := config.Save(); err != nil {
+		log.Error().Err(err).Msgf("Failed to save config after %s", what)
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("%s applied, but the configuration could not be saved: %v", what, err))
+		return false
+	}
+	return true
+}
+
+// decodeJSON decodes a request body with a size limit. Unknown fields are
+// ignored so older exports and Loxone-generated bodies keep working.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	dec := json.NewDecoder(r.Body)
@@ -146,6 +159,9 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 		"shelly_configured":      h.deps.Shelly.IsConfigured(),
 		"auth_required":          config.GetServer().APIToken != "",
 		"webhook_token_required": config.GetServer().WebhookToken != "",
+		// The UI needs the port to build device-reachable URLs when it is
+		// served through a proxy (e.g. Home Assistant ingress).
+		"port": config.GetServer().Port,
 	}
 	if h.deps.MQTTSub != nil {
 		resp["mqtt_connected"] = h.deps.MQTTSub.IsConnected()
@@ -320,8 +336,8 @@ func (h *Handlers) AddShelly(w http.ResponseWriter, r *http.Request) {
 	if h.deps.MQTTSub != nil {
 		h.deps.MQTTSub.SetDevices(cfg.Shelly.Devices)
 	}
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after adding device")
+	if !persistConfig(w, "adding device") {
+		return
 	}
 
 	log.Info().Str("id", dev.ID).Str("ip", dev.IP).Msg("Shelly device added via API")
@@ -389,8 +405,8 @@ func (h *Handlers) UpdateShelly(w http.ResponseWriter, r *http.Request) {
 	if h.deps.MQTTSub != nil {
 		h.deps.MQTTSub.SetDevices(cfg.Shelly.Devices)
 	}
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after updating device")
+	if !persistConfig(w, "updating device") {
+		return
 	}
 
 	log.Info().Str("id", id).Msg("Shelly device updated via API")
@@ -432,8 +448,8 @@ func (h *Handlers) RemoveShelly(w http.ResponseWriter, r *http.Request) {
 	if h.deps.MQTTSub != nil {
 		h.deps.MQTTSub.SetDevices(cfg.Shelly.Devices)
 	}
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after removing device")
+	if !persistConfig(w, "removing device") {
+		return
 	}
 
 	log.Info().Str("id", id).Msg("Shelly device removed via API")
@@ -518,8 +534,8 @@ func (h *Handlers) CreateMapping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.deps.Mappings.Load(cfg.Mappings)
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after creating mapping")
+	if !persistConfig(w, "creating mapping") {
+		return
 	}
 
 	jsonResponse(w, http.StatusCreated, mapping)
@@ -565,8 +581,8 @@ func (h *Handlers) UpdateMapping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.deps.Mappings.Load(cfg.Mappings)
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after updating mapping")
+	if !persistConfig(w, "updating mapping") {
+		return
 	}
 
 	jsonResponse(w, http.StatusOK, updated)
@@ -602,8 +618,8 @@ func (h *Handlers) DeleteMapping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.deps.Mappings.Load(cfg.Mappings)
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after deleting mapping")
+	if !persistConfig(w, "deleting mapping") {
+		return
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -650,16 +666,27 @@ func (h *Handlers) ImportMappings(w http.ResponseWriter, r *http.Request) {
 				added++
 			}
 		}
+		// Same rule as create/update: a loxone_id may only be active once.
+		seen := make(map[string]string, len(c.Mappings))
+		for _, m := range c.Mappings {
+			if !m.Enabled {
+				continue
+			}
+			if other, dup := seen[m.LoxoneID]; dup {
+				return fmt.Errorf("loxone_id %q is used by both %q and %q", m.LoxoneID, other, m.Name)
+			}
+			seen[m.LoxoneID] = m.Name
+		}
 		return nil
 	})
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
+		jsonError(w, http.StatusConflict, err.Error())
 		return
 	}
 
 	h.deps.Mappings.Load(cfg.Mappings)
-	if err := config.Save(); err != nil {
-		log.Error().Err(err).Msg("Failed to save config after importing mappings")
+	if !persistConfig(w, "importing mappings") {
+		return
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
@@ -729,9 +756,14 @@ func (h *Handlers) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			Logging: update.Logging,
 		}
 		config.RestoreSecrets(incoming, c)
-		// The listening address only changes after a restart; keep it stable.
-		incoming.Server.Port = c.Server.Port
-		incoming.Server.Host = c.Server.Host
+		// The listening address is persisted but only applied after a restart;
+		// omitted values keep the current ones.
+		if incoming.Server.Port == 0 {
+			incoming.Server.Port = c.Server.Port
+		}
+		if incoming.Server.Host == "" {
+			incoming.Server.Host = c.Server.Host
+		}
 		c.Server = incoming.Server
 		c.Shelly = incoming.Shelly
 		c.Loxone = incoming.Loxone
@@ -754,7 +786,7 @@ func (h *Handlers) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	log.Info().Msg("Configuration updated via API")
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status":           "ok",
-		"restart_required": previous.Server.Port != update.Server.Port && update.Server.Port != 0 || previous.Server.Host != update.Server.Host && update.Server.Host != "",
+		"restart_required": cfg.Server.Port != previous.Server.Port || cfg.Server.Host != previous.Server.Host,
 	})
 }
 

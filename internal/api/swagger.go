@@ -68,7 +68,7 @@ func (h *Handlers) SwaggerJSON(w http.ResponseWriter, r *http.Request) {
 					"tags":     []string{"System"},
 					"security": []map[string]interface{}{},
 					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "OK"},
+						"200": map[string]interface{}{"description": "Status, version, auth flags and the configured port"},
 					},
 				},
 			},
@@ -106,9 +106,11 @@ func (h *Handlers) SwaggerJSON(w http.ResponseWriter, r *http.Request) {
 								"schema": map[string]interface{}{
 									"type": "object",
 									"properties": map[string]interface{}{
-										"on":         map[string]string{"type": "boolean"},
+										"on":         map[string]string{"type": "boolean", "description": "Switch/light on or off; opens/closes covers"},
 										"brightness": map[string]string{"type": "number"},
 										"position":   map[string]string{"type": "integer"},
+										"stop":       map[string]string{"type": "boolean", "description": "Stop a moving cover"},
+										"channel":    map[string]string{"type": "integer"},
 									},
 								},
 							},
@@ -239,13 +241,13 @@ func (h *Handlers) SwaggerJSON(w http.ResponseWriter, r *http.Request) {
 			},
 			"/api/backups/{id}/download": map[string]interface{}{
 				"get": map[string]interface{}{
-					"summary": "Download a backup",
+					"summary": "Download a backup (secrets masked)",
 					"tags":    []string{"Backups"},
 					"parameters": []map[string]interface{}{
 						{"name": "id", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
 					},
 					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "Backup file"},
+						"200": map[string]interface{}{"description": "Backup file; passwords and tokens are replaced by ********, restoring it keeps the stored values"},
 					},
 				},
 			},

@@ -1,6 +1,7 @@
 package loxone
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/sbeyeler/loxone2shelly/internal/models"
@@ -12,6 +13,12 @@ type MappingManager struct {
 	byLoxoneID map[string]*models.Mapping   // keyed by LoxoneID
 	byShellyID map[string][]*models.Mapping // keyed by ShellyID, all mappings of that device
 	mu         sync.RWMutex
+}
+
+// Target pairs a mapping with the Loxone ID its feedback is addressed to.
+type Target struct {
+	Mapping  models.Mapping
+	LoxoneID string
 }
 
 // NewMappingManager creates a new mapping manager
@@ -64,34 +71,34 @@ func (m *MappingManager) GetByShellyID(shellyID string) []models.Mapping {
 	return result
 }
 
-// GetForChannel returns the mappings that apply to a state update of the given
-// device. channel == nil selects device-level mappings (no channel set).
-// For a channel update, channel-specific mappings win; channel 0 additionally
-// falls back to device-level mappings so single-channel setups keep working.
-func (m *MappingManager) GetForChannel(shellyID string, channel *int) []models.Mapping {
+// TargetsForChannel selects the mappings a state update of a device is
+// delivered to. channel == nil addresses device-level mappings only. For a
+// channel update, channel-specific mappings win; without one, device-level
+// mappings receive it, with a "_<channel>" suffix on the Loxone ID for
+// channels > 0 so multi-channel devices stay distinguishable in Loxone.
+// Polling, MQTT and webhook events all use this rule.
+func (m *MappingManager) TargetsForChannel(shellyID string, channel *int) []Target {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var specific, deviceLevel []models.Mapping
+	var specific, deviceLevel []Target
 	for _, mp := range m.byShellyID[shellyID] {
 		switch {
 		case mp.Channel == nil:
-			deviceLevel = append(deviceLevel, mp.Clone())
+			id := mp.LoxoneID
+			if channel != nil && *channel != 0 {
+				id = fmt.Sprintf("%s_%d", id, *channel)
+			}
+			deviceLevel = append(deviceLevel, Target{Mapping: mp.Clone(), LoxoneID: id})
 		case channel != nil && *mp.Channel == *channel:
-			specific = append(specific, mp.Clone())
+			specific = append(specific, Target{Mapping: mp.Clone(), LoxoneID: mp.LoxoneID})
 		}
 	}
 
-	if channel == nil {
-		return deviceLevel
-	}
 	if len(specific) > 0 {
 		return specific
 	}
-	if *channel == 0 {
-		return deviceLevel
-	}
-	return nil
+	return deviceLevel
 }
 
 // Remove removes a mapping by ID

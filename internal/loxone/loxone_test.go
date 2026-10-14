@@ -131,20 +131,20 @@ func TestMappingManagerMultipleMappingsPerDevice(t *testing.T) {
 	}
 
 	// Device-level update reaches only device-level mappings.
-	if got := m.GetForChannel("dev", nil); len(got) != 1 || got[0].ID != "a" {
+	if got := m.TargetsForChannel("dev", nil); len(got) != 1 || got[0].Mapping.ID != "a" {
 		t.Fatalf("device-level lookup wrong: %+v", got)
 	}
 	// Channel 1 goes to its specific mapping.
-	if got := m.GetForChannel("dev", intp(1)); len(got) != 1 || got[0].ID != "b" {
+	if got := m.TargetsForChannel("dev", intp(1)); len(got) != 1 || got[0].Mapping.ID != "b" || got[0].LoxoneID != "lox_b" {
 		t.Fatalf("channel lookup wrong: %+v", got)
 	}
 	// Channel 0 without specific mapping falls back to device level.
-	if got := m.GetForChannel("dev", intp(0)); len(got) != 1 || got[0].ID != "a" {
+	if got := m.TargetsForChannel("dev", intp(0)); len(got) != 1 || got[0].Mapping.ID != "a" || got[0].LoxoneID != "lox_a" {
 		t.Fatalf("channel 0 fallback wrong: %+v", got)
 	}
-	// Channel 2 has nothing.
-	if got := m.GetForChannel("dev", intp(2)); len(got) != 0 {
-		t.Fatalf("channel 2 must have no mapping: %+v", got)
+	// Channel 2 reaches the device-level mapping under a suffixed ID.
+	if got := m.TargetsForChannel("dev", intp(2)); len(got) != 1 || got[0].Mapping.ID != "a" || got[0].LoxoneID != "lox_a_2" {
+		t.Fatalf("channel 2 fallback wrong: %+v", got)
 	}
 
 	shellyID, _, ch, ok := m.ResolveTarget("lox_b")
@@ -153,7 +153,7 @@ func TestMappingManagerMultipleMappingsPerDevice(t *testing.T) {
 	}
 
 	m.Remove("a")
-	if got := m.GetForChannel("dev", nil); len(got) != 0 {
+	if got := m.TargetsForChannel("dev", nil); len(got) != 0 {
 		t.Fatal("removed mapping still returned")
 	}
 	if got := m.GetByShellyID("dev"); len(got) != 1 {
@@ -234,6 +234,24 @@ func TestParseTextCommands(t *testing.T) {
 	q, err := p.ParseText("GET light STATUS")
 	if err != nil || q.Type != "query" {
 		t.Fatalf("GET parse wrong: %+v %v", q, err)
+	}
+
+	// Cover actions: OPEN/CLOSE map onto on/off, STOP sets the stop flag.
+	open, _ := p.ParseText("SET roller OPEN")
+	closeCmd, _ := p.ParseText("SET roller CLOSE")
+	stop, _ := p.ParseText("SET roller STOP")
+	if dc := p.ToDeviceCommand(open, nil); dc.On == nil || !*dc.On || dc.Stop != nil {
+		t.Fatalf("OPEN wrong: %+v", dc)
+	}
+	if dc := p.ToDeviceCommand(closeCmd, nil); dc.On == nil || *dc.On {
+		t.Fatalf("CLOSE wrong: %+v", dc)
+	}
+	if dc := p.ToDeviceCommand(stop, nil); dc.Stop == nil || !*dc.Stop || dc.On != nil {
+		t.Fatalf("STOP wrong: %+v", dc)
+	}
+	js, _ := p.ParseJSON([]byte(`{"target":"roller","params":{"stop":true}}`))
+	if dc := p.ToDeviceCommand(js, nil); dc.Stop == nil || !*dc.Stop {
+		t.Fatalf("JSON stop wrong: %+v", dc)
 	}
 }
 

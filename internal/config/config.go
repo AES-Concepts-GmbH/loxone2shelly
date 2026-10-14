@@ -103,6 +103,11 @@ var (
 	cfgPath    string
 	mu         sync.RWMutex
 	appVersion string
+	// envAPIToken is the token injected via L2S_API_TOKEN; it overrides the
+	// file at runtime but is never written back. fileAPIToken is what the file
+	// contained, so Save keeps the file's own value.
+	envAPIToken  string
+	fileAPIToken string
 )
 
 // SetVersion sets the application version for use in backups
@@ -195,8 +200,10 @@ func Load(path string) (*Config, error) {
 
 	normalize(loaded)
 
-	if token := os.Getenv("L2S_API_TOKEN"); token != "" {
-		loaded.Server.APIToken = token
+	fileAPIToken = loaded.Server.APIToken
+	envAPIToken = os.Getenv("L2S_API_TOKEN")
+	if envAPIToken != "" {
+		loaded.Server.APIToken = envAPIToken
 	}
 
 	if err := validate(loaded); err != nil {
@@ -333,10 +340,16 @@ func Update(fn func(c *Config) error) (*Config, error) {
 	return cfg.Clone(), nil
 }
 
-// Save writes the current configuration to the file atomically.
+// Save writes the current configuration to the file atomically. A token that
+// came from the environment is not persisted; the file keeps its own value.
 func Save() error {
 	mu.RLock()
-	data, err := yaml.Marshal(cfg)
+	toSave := cfg
+	if envAPIToken != "" && cfg.Server.APIToken == envAPIToken {
+		toSave = cfg.Clone()
+		toSave.Server.APIToken = fileAPIToken
+	}
+	data, err := yaml.Marshal(toSave)
 	path := pathLocked()
 	mu.RUnlock()
 	if err != nil {

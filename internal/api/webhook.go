@@ -1,8 +1,8 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	"github.com/rs/zerolog/log"
@@ -19,6 +19,10 @@ var knownWebhookEvents = map[string]bool{
 	"open": true, "close": true, "stop": true,
 }
 
+// webhookValuePattern restricts the optional value to characters that cannot
+// break the UDP text protocol ("<id>/<property>:<value>").
+var webhookValuePattern = regexp.MustCompile(`^[A-Za-z0-9_.+-]{0,64}$`)
+
 // Webhook receives HTTP notifications from Shelly devices (action URLs).
 //
 // URL format:
@@ -29,7 +33,7 @@ var knownWebhookEvents = map[string]bool{
 //   - device_id (required): Shelly device ID as configured
 //   - event (required): e.g. "single_push", "double_push", "long_push", "btn_down", "btn_up", "toggle", "on", "off"
 //   - channel (optional): channel index for multi-channel devices (default 0)
-//   - value (optional): additional value (e.g. brightness, position)
+//   - value (optional): additional value (e.g. brightness, position); letters, digits, "_", ".", "+", "-"
 //   - token (required when server.webhook_token is configured)
 func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -56,7 +60,7 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "event is required")
 		return
 	}
-	if len(event) > 32 || !knownWebhookEvents[event] {
+	if !knownWebhookEvents[event] {
 		jsonError(w, http.StatusBadRequest, "unknown event")
 		return
 	}
@@ -72,8 +76,8 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	value := q.Get("value")
-	if len(value) > 64 {
-		jsonError(w, http.StatusBadRequest, "value too long")
+	if !webhookValuePattern.MatchString(value) {
+		jsonError(w, http.StatusBadRequest, "value may only contain letters, digits, '_', '.', '+' and '-' (max 64 chars)")
 		return
 	}
 
@@ -89,11 +93,11 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 
 	sent := 0
 	var loxoneID string
-	for _, wm := range webhookTargets(h.deps.Mappings.GetByShellyID(deviceID), channel) {
+	for _, t := range h.deps.Mappings.TargetsForChannel(deviceID, &channel) {
 		if loxoneID == "" {
-			loxoneID = wm.loxoneID
+			loxoneID = t.LoxoneID
 		}
-		h.deps.Dispatcher.SendToMapping(wm.mapping, wm.loxoneID, props)
+		h.deps.Dispatcher.SendToMapping(&t.Mapping, t.LoxoneID, props)
 		sent++
 	}
 
@@ -122,34 +126,6 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "ok", "mappings": sent})
-}
-
-type webhookTarget struct {
-	mapping  *models.Mapping
-	loxoneID string
-}
-
-// webhookTargets selects the mappings a webhook event on the given channel is
-// delivered to. Channel-specific mappings win; without one, device-level
-// mappings receive the event, with a "_<channel>" suffix for channels > 0 so
-// multi-channel devices stay distinguishable in Loxone.
-func webhookTargets(mappings []models.Mapping, channel int) []webhookTarget {
-	var specific, deviceLevel []webhookTarget
-	for i := range mappings {
-		m := &mappings[i]
-		switch {
-		case m.Channel != nil && *m.Channel == channel:
-			specific = append(specific, webhookTarget{m, m.LoxoneID})
-		case m.Channel == nil && channel == 0:
-			deviceLevel = append(deviceLevel, webhookTarget{m, m.LoxoneID})
-		case m.Channel == nil:
-			deviceLevel = append(deviceLevel, webhookTarget{m, fmt.Sprintf("%s_%d", m.LoxoneID, channel)})
-		}
-	}
-	if len(specific) > 0 {
-		return specific
-	}
-	return deviceLevel
 }
 
 // eventFromWebhook converts a webhook call into an input event for UI clients.
