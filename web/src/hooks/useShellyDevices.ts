@@ -114,12 +114,14 @@ export function useShellyDevices(enabled = true) {
         if (result && result.id) {
           setDevices((prev) => prev.map((d) => (d.id === result.id ? result : d)));
         }
+        // The cooldown stays in place so that stale state from the next poll
+        // cycle is ignored; it expires on its own via the timestamp check.
       } catch (err) {
-        // Reload the real state first; refresh() clears the error, so set it afterwards.
+        // On failure, drop the cooldown and resync immediately. refresh()
+        // clears the error, so set it afterwards.
+        commandCooldowns.current.delete(deviceId);
         await refresh();
         setError(err instanceof Error ? err.message : 'Fehler beim Steuern');
-      } finally {
-        commandCooldowns.current.delete(deviceId);
       }
     },
     [refresh]
