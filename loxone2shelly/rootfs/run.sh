@@ -15,7 +15,7 @@ if [ ! -f "${CONFIG_FILE}" ]; then
     bashio::log.info "Creating initial configuration..."
     cat > "${CONFIG_FILE}" << EOF
 server:
-  port: 8080
+  port: 8081
   host: "0.0.0.0"
 
 shelly:
@@ -48,13 +48,13 @@ fi
 bashio::log.info "Starting Loxone2Shelly Gateway..."
 bashio::log.info "Config: ${CONFIG_FILE}"
 bashio::log.info "Log Level: ${LOG_LEVEL}"
-# The add-on runs with host networking, so port 8080 is reachable on the LAN
+# The add-on runs with host networking, so port 8081 is reachable on the LAN
 # without Home Assistant's login. The token protects that path.
 if [ -n "${API_TOKEN}" ]; then
     export L2S_API_TOKEN="${API_TOKEN}"
     bashio::log.info "API token: set via add-on option"
 else
-    bashio::log.warning "No API token set: the Web UI and API on port 8080 are reachable without login"
+    bashio::log.warning "No API token set: the Web UI and API on port 8081 are reachable without login"
 fi
 
 exec /app/gateway -config "${CONFIG_FILE}"
