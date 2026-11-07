@@ -1,6 +1,6 @@
 name: "Loxone2Shelly Gateway"
 description: "Gateway zur bidirektionalen Kommunikation zwischen Loxone Miniserver und Shelly-Geräten"
-version: "0.1.0"
+version: "0.1.1"
 slug: loxone2shelly
 url: "https://github.com/AES-Concepts-GmbH/loxone2shelly"
 # Pre-built images (published by .github/workflows/addon.yml). Home Assistant
@@ -13,13 +13,13 @@ arch:
 init: false
 host_network: true
 ingress: true
-ingress_port: 8080
+ingress_port: 8081
 panel_icon: "mdi:home-automation"
 panel_title: "Loxone2Shelly"
 ports:
-  8080/tcp: 8080
+  8081/tcp: 8081
 ports_description:
-  8080/tcp: "Web UI & API"
+  8081/tcp: "Web UI & API"
 map:
   - addon_config:rw
 options:

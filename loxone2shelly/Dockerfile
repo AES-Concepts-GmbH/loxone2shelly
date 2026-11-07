@@ -37,5 +37,5 @@ COPY --from=go-builder /app/gateway .
 COPY --from=web-builder /app/web/dist ./web/dist
 COPY loxone2shelly/rootfs /
 RUN chmod a+x /run.sh
-EXPOSE 8080
+EXPOSE 8081
 CMD ["/run.sh"]
